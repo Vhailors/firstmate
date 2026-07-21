@@ -36,6 +36,12 @@
 #       refuse before inventory or deletion
 #   (t) mandatory Git inventory and post-prune inspection failures refuse closed
 #   (u) the prime directive permits discard only through the exact scoped token
+#   (v) ignored secrets, generated output, caches, dependency trees, empty
+#       directories, and nested repository state require fresh exact authority
+#   (w) caller-controlled root overrides cannot hide the running checkout
+#   (x) incomplete state metadata enumeration refuses closed
+#   (y) a per-project lock serializes removals and a final inventory comparison
+#       catches writes that race the transaction
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -44,6 +50,7 @@ fm_git_identity
 
 REMOVE="$ROOT/bin/fm-project-remove.sh"
 REAL_GIT=$(command -v git)
+REAL_FIND=$(command -v find)
 TMP_ROOT=$(fm_test_tmproot fm-project-remove-tests)
 
 make_home() {
@@ -227,8 +234,10 @@ test_discard_authority_is_project_scoped() {
   make_home "$home"
   make_landed_clone "$home" alpha
   make_landed_clone "$home" beta
+  make_landed_clone "$home" gamma
   add_registry "$home" alpha
   add_registry "$home" beta
+  add_registry "$home" gamma
   echo x > "$home/projects/alpha/dirty.txt"
   echo y > "$home/projects/beta/dirty.txt"
 
@@ -247,7 +256,69 @@ test_discard_authority_is_project_scoped() {
   expect_code 1 "$code" "prose authority refusal"
   assert_contains "$out" "unrecognized discard-authority" "vague prose token not rejected"
   assert_present "$home/projects/alpha" "prose token still removed the clone"
+
+  out=$(run_remove "$home" gamma --confirm gamma --discard-authority "$beta_token")
+  code=$?
+  expect_code 1 "$code" "clean cross-project token refusal"
+  assert_contains "$out" "scoped to a different project" "clean inventory accepted a cross-project token"
+
+  out=$(run_remove "$home" gamma --confirm gamma --discard-authority "yes I am sure")
+  code=$?
+  expect_code 1 "$code" "clean prose authority refusal"
+  assert_contains "$out" "unrecognized discard-authority" "clean inventory accepted prose authority"
+
+  out=$(run_remove "$home" gamma --confirm gamma --discard-authority "discard-unlanded:gamma:deadbeef0000")
+  code=$?
+  expect_code 1 "$code" "clean stale token refusal"
+  assert_contains "$out" "does not match the CURRENT" "clean inventory accepted a stale same-project token"
+  assert_present "$home/projects/gamma" "invalid clean-inventory authority removed the clone"
   pass "discard authority never transfers across projects or accepts prose"
+}
+
+test_ignored_and_nested_repository_state_is_scoped() {
+  local home="$TMP_ROOT/ignored" nested out code token fresh_token
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  printf '.env\ndist/\n.cache/\nnode_modules/\n' > "$home/projects/alpha/.git/info/exclude"
+  mkdir -p "$home/projects/alpha/dist" "$home/projects/alpha/.cache/empty" "$home/projects/alpha/node_modules/pkg"
+  printf 'secret\n' > "$home/projects/alpha/.env"
+  printf 'bundle\n' > "$home/projects/alpha/dist/app.js"
+  printf 'dependency\n' > "$home/projects/alpha/node_modules/pkg/index.js"
+  nested="$home/projects/alpha/node_modules/nested"
+  fm_git_init_commit "$nested"
+
+  out=$(run_remove "$home" alpha --check)
+  code=$?
+  expect_code 1 "$code" "ignored inventory refusal"
+  assert_contains "$out" "ignored path report" "ignored content was not classified as discardable"
+  token=$(extract_token "$out")
+  [ -n "$token" ] || fail "ignored inventory did not produce a discard token"
+
+  printf 'changed secret\n' > "$home/projects/alpha/.env"
+  printf 'changed bundle\n' > "$home/projects/alpha/dist/app.js"
+  printf 'changed dependency\n' > "$home/projects/alpha/node_modules/pkg/index.js"
+  printf 'nested commit\n' > "$nested/commit-only.txt"
+  git -C "$nested" add commit-only.txt
+  git -C "$nested" commit -qm "nested commit"
+  git -C "$nested" tag nested-state
+  printf 'nested stash\n' >> "$nested/README.md"
+  git -C "$nested" stash -q
+
+  out=$(run_remove "$home" alpha --confirm alpha --discard-authority "$token")
+  code=$?
+  expect_code 1 "$code" "ignored and nested stale token refusal"
+  assert_contains "$out" "does not match the CURRENT" "ignored or nested repository changes did not invalidate authority"
+  assert_present "$home/projects/alpha" "stale ignored-inventory authority removed the clone"
+
+  out=$(run_remove "$home" alpha --check)
+  fresh_token=$(extract_token "$out")
+  [ -n "$fresh_token" ] || fail "changed ignored inventory did not produce a fresh token"
+  out=$(run_remove "$home" alpha --confirm alpha --discard-authority "$fresh_token")
+  code=$?
+  expect_code 0 "$code" "fresh ignored inventory authority"
+  assert_absent "$home/projects/alpha" "fresh ignored-inventory authority did not remove the clone"
+  pass "ignored payloads and nested repository state are exact authority inventory"
 }
 
 test_unpushed_branch_and_stash_refuse() {
@@ -440,6 +511,98 @@ test_active_home_roots_cannot_be_overridden() {
     assert_grep '- alpha ' "$other/data/projects.md" "$variable mismatch changed the other registry"
   done
   pass "state, data, and projects roots remain contained by the active home"
+}
+
+test_root_override_cannot_hide_running_checkout() {
+  local home="$TMP_ROOT/root-identity" fake_root embedded out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  fake_root="$home/fake-root"
+  embedded="$home/projects/alpha/embedded-firstmate"
+  mkdir -p "$fake_root/bin" "$embedded/bin"
+  cp "$REMOVE" "$embedded/bin/fm-project-remove.sh"
+  cp "$ROOT/bin/fm-gate-refuse-lib.sh" "$embedded/bin/fm-gate-refuse-lib.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$fake_root/bin/fm-guard.sh"
+  chmod +x "$fake_root/bin/fm-guard.sh" "$embedded/bin/fm-project-remove.sh"
+
+  out=$(FM_ROOT_OVERRIDE="$fake_root" FM_HOME="$home" "$embedded/bin/fm-project-remove.sh" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "immutable checkout containment"
+  assert_contains "$out" "this firstmate checkout" "root override hid the running checkout from containment"
+  assert_present "$home/projects/alpha" "root override containment failure removed the running checkout"
+  assert_grep '- alpha ' "$home/data/projects.md" "root override containment failure changed the registry"
+  pass "checkout containment is independent of caller-controlled root overrides"
+}
+
+test_state_enumeration_failure_refuses_closed() {
+  local home="$TMP_ROOT/state-enumeration" fakebin out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  fm_write_meta "$home/state/unrelated.meta" "project=$home/projects/beta"
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-find-state")
+  # shellcheck disable=SC2016
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -u' \
+    'if [ "${1:-}" = "${FM_TEST_STATE:-}" ]; then exit 86; fi' \
+    'exec "$FM_REAL_FIND" "$@"' > "$fakebin/find"
+  chmod +x "$fakebin/find"
+
+  out=$(PATH="$fakebin:$PATH" FM_REAL_FIND="$REAL_FIND" FM_TEST_STATE="$home/state" \
+    FM_HOME="$home" "$REMOVE" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "state enumeration failure"
+  assert_contains "$out" "refusing:" "state enumeration failure was not reported"
+  assert_present "$home/projects/alpha" "state enumeration failure removed the clone"
+  assert_grep '- alpha ' "$home/data/projects.md" "state enumeration failure changed the registry"
+  pass "incomplete state metadata enumeration refuses closed"
+}
+
+test_transaction_lock_and_final_inventory_recheck() {
+  local home="$TMP_ROOT/transaction" fakebin owner lock marker out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  lock="$home/state/.project-remove-alpha.lock"
+  owner="$home/state/.project-remove-alpha.lock.owner.fixture"
+  mkdir "$owner"
+  printf '%s\n' "$$" > "$owner/pid"
+  ln -s "$owner" "$lock"
+
+  out=$(run_remove "$home" alpha --confirm alpha)
+  code=$?
+  expect_code 1 "$code" "project removal lock contention"
+  assert_contains "$out" "another project-removal transaction" "live transaction lock was not honored"
+  assert_present "$home/projects/alpha" "lock contention removed the clone"
+  rm "$lock" "$owner/pid"
+  rmdir "$owner"
+
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-find-race")
+  marker="$home/race-fired"
+  # shellcheck disable=SC2016
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -u' \
+    'if [ "${1:-}" = "${FM_TEST_RACE_TARGET:-}" ] && [ -L "${FM_TEST_RACE_LOCK:-}" ] && [ ! -e "${FM_TEST_RACE_MARKER:-}" ]; then' \
+    '  : > "$FM_TEST_RACE_MARKER"' \
+    '  printf "raced\n" > "$FM_TEST_RACE_TARGET/raced.txt"' \
+    'fi' \
+    'exec "$FM_REAL_FIND" "$@"' > "$fakebin/find"
+  chmod +x "$fakebin/find"
+
+  out=$(PATH="$fakebin:$PATH" FM_REAL_FIND="$REAL_FIND" FM_TEST_RACE_TARGET="$home/projects/alpha" \
+    FM_TEST_RACE_LOCK="$lock" FM_TEST_RACE_MARKER="$marker" FM_HOME="$home" \
+    "$REMOVE" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "final inventory race refusal"
+  assert_contains "$out" "inventory changed before mutation" "final inventory comparison missed a racing write"
+  assert_present "$home/projects/alpha/raced.txt" "race fixture did not create the competing work"
+  assert_present "$home/projects/alpha" "racing write was deleted"
+  assert_grep '- alpha ' "$home/data/projects.md" "racing write refusal changed the registry"
+  assert_absent "$lock" "project-removal lock survived transaction refusal"
+  pass "project removal holds a lock and rechecks inventory before mutation"
 }
 
 test_git_inspection_failures_refuse_closed() {
@@ -651,6 +814,7 @@ test_check_is_read_only_on_clean_clone
 test_confirm_required_and_exact
 test_dirty_refusal_and_scoped_discard_flow
 test_discard_authority_is_project_scoped
+test_ignored_and_nested_repository_state_is_scoped
 test_unpushed_branch_and_stash_refuse
 test_no_remote_repository_refuses_then_discards
 test_live_task_metadata_refuses_structurally
@@ -665,6 +829,9 @@ test_stale_registry_repair_is_idempotent_and_loud
 test_unregistered_clone_removed_with_notice
 test_gate_agent_is_refused
 test_active_home_roots_cannot_be_overridden
+test_root_override_cannot_hide_running_checkout
+test_state_enumeration_failure_refuses_closed
+test_transaction_lock_and_final_inventory_recheck
 test_git_inspection_failures_refuse_closed
 test_instruction_contract_scopes_discard_authority
 

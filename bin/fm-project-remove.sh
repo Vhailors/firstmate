@@ -36,7 +36,8 @@
 #     whose directories are already gone are cleaned only through
 #     `git worktree prune` (the supported owner tool), never by raw deletion
 # DISCARDABLE blockers name work content the captain may explicitly discard:
-#   - dirty or untracked files
+#   - dirty, untracked, or ignored files and directories, including nested
+#     repository metadata and object state
 #   - stash entries
 #   - branches (and a detached HEAD) not reachable from any remote-tracking
 #     branch, including every commit object of a repository with no remote
@@ -52,7 +53,9 @@
 # Transaction order (mutations happen strictly in this order, each gated on
 # the previous step):
 #   1. every check above passes, or every blocker is discardable and exactly
-#      covered by the presented discard-authority token
+#      covered by the presented discard-authority token; a per-project
+#      transaction lock is acquired and the complete risk inventory is
+#      rechecked unchanged immediately before mutation
 #   2. `git worktree prune` inside the clone (supported owner tool, safe:
 #      it drops only registrations whose directories are already gone)
 #   3. the clone directory is removed
@@ -83,7 +86,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+ACTUAL_FM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+FM_ROOT="${FM_ROOT_OVERRIDE:-$ACTUAL_FM_ROOT}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
@@ -226,24 +230,40 @@ fingerprint_hash() {
   fi
 }
 
+path_mode() {
+  if [ "$(uname)" = Darwin ]; then
+    stat -f '%Lp' "$1" 2>/dev/null
+  else
+    stat -c '%a' "$1" 2>/dev/null
+  fi
+}
+
 hash_inventory_entries() {
-  local repo=$1 rel full path_hash content_hash link_target nested_hash kind
+  local root=$1 rel full path_hash content_hash link_target mode
   while IFS= read -r -d '' rel; do
-    full="$repo/$rel"
+    case "$rel" in
+      "$root"/*) rel=${rel#"$root"/} ;;
+    esac
+    full="$root/$rel"
     path_hash=$(printf '%s' "$rel" | fingerprint_hash) || return 1
+    mode=$(path_mode "$full") || return 1
     if [ -L "$full" ]; then
       link_target=$(readlink "$full") || return 1
       content_hash=$(printf '%s' "$link_target" | fingerprint_hash) || return 1
-      printf 'symlink:%s:%s\n' "$path_hash" "$content_hash"
+      printf 'symlink:%s:%s:%s\n' "$mode" "$path_hash" "$content_hash"
     elif [ -f "$full" ]; then
       content_hash=$(fingerprint_hash < "$full") || return 1
-      kind=file
-      [ -x "$full" ] && kind=file+x
-      printf '%s:%s:%s\n' "$kind" "$path_hash" "$content_hash"
+      printf 'file:%s:%s:%s\n' "$mode" "$path_hash" "$content_hash"
     elif [ -d "$full" ]; then
-      git -C "$full" rev-parse --git-dir >/dev/null 2>&1 || return 1
-      nested_hash=$(repo_inventory_hash "$full") || return 1
-      printf 'repository:%s:%s\n' "$path_hash" "$nested_hash"
+      printf 'directory:%s:%s\n' "$mode" "$path_hash"
+    elif [ -p "$full" ]; then
+      printf 'fifo:%s:%s\n' "$mode" "$path_hash"
+    elif [ -S "$full" ]; then
+      printf 'socket:%s:%s\n' "$mode" "$path_hash"
+    elif [ -b "$full" ]; then
+      printf 'block:%s:%s\n' "$mode" "$path_hash"
+    elif [ -c "$full" ]; then
+      printf 'character:%s:%s\n' "$mode" "$path_hash"
     elif [ ! -e "$full" ]; then
       printf 'missing:%s\n' "$path_hash"
     else
@@ -256,11 +276,176 @@ repo_inventory_hash() {
   local repo=$1 index_hash files_hash
   index_hash=$(git -C "$repo" ls-files --stage -z | fingerprint_hash) || return 1
   files_hash=$(
-    git -C "$repo" ls-files --cached --others --exclude-standard -z \
+    find "$repo" -mindepth 1 -path "$repo/.git" -prune -o -print0 \
       | hash_inventory_entries "$repo" \
+      | LC_ALL=C sort \
       | fingerprint_hash
   ) || return 1
   printf 'index:%s\nfiles:%s\n' "$index_hash" "$files_hash" | fingerprint_hash
+}
+
+optional_path_hash() {
+  local path=$1 link_hash content_hash mode
+  if [ -L "$path" ]; then
+    mode=$(path_mode "$path") || return 1
+    link_hash=$(readlink "$path" | fingerprint_hash) || return 1
+    if [ -f "$path" ]; then
+      content_hash=$(fingerprint_hash < "$path") || return 1
+    else
+      content_hash=not-a-file
+    fi
+    printf 'symlink:%s:%s:%s\n' "$mode" "$link_hash" "$content_hash" | fingerprint_hash
+  elif [ -f "$path" ]; then
+    mode=$(path_mode "$path") || return 1
+    content_hash=$(fingerprint_hash < "$path") || return 1
+    printf 'file:%s:%s\n' "$mode" "$content_hash" | fingerprint_hash
+  elif [ -e "$path" ]; then
+    return 1
+  else
+    printf 'absent\n' | fingerprint_hash
+  fi
+}
+
+state_meta_inventory_hash() {
+  local entries_hash
+  if [ ! -e "$STATE" ] && [ ! -L "$STATE" ]; then
+    printf 'absent\n' | fingerprint_hash
+    return
+  fi
+  [ -d "$STATE" ] || return 1
+  entries_hash=$(
+    find "$STATE" -mindepth 1 -maxdepth 1 -name '*.meta' -print0 \
+      | hash_inventory_entries "$STATE" \
+      | LC_ALL=C sort \
+      | fingerprint_hash
+  ) || return 1
+  printf 'meta:%s\n' "$entries_hash" | fingerprint_hash
+}
+
+root_git_state_hash() {
+  local worktrees status stashes remotes refs objects head_state
+  worktrees=$(git -C "$TARGET" worktree list --porcelain 2>/dev/null) || return 1
+  status=$(git -C "$TARGET" status --porcelain=v1 --untracked-files=all --ignored=traditional 2>/dev/null) || return 1
+  stashes=$(git -C "$TARGET" stash list --format='%H' 2>/dev/null) || return 1
+  remotes=$(git -C "$TARGET" remote 2>/dev/null) || return 1
+  refs=$(git -C "$TARGET" for-each-ref --format='%(refname) %(objectname)' 2>/dev/null) || return 1
+  objects=$(
+    git -C "$TARGET" cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype)' 2>/dev/null \
+      | LC_ALL=C sort
+  ) || return 1
+  if head_state=$(git -C "$TARGET" rev-parse -q --verify HEAD 2>/dev/null); then
+    :
+  else
+    [ "$?" -eq 1 ] || return 1
+    head_state=unborn
+  fi
+  printf 'worktrees:%s\nstatus:%s\nstashes:%s\nremotes:%s\nrefs:%s\nobjects:%s\nhead:%s\n' \
+    "$(printf '%s' "$worktrees" | fingerprint_hash)" \
+    "$(printf '%s' "$status" | fingerprint_hash)" \
+    "$(printf '%s' "$stashes" | fingerprint_hash)" \
+    "$(printf '%s' "$remotes" | fingerprint_hash)" \
+    "$(printf '%s' "$refs" | fingerprint_hash)" \
+    "$(printf '%s' "$objects" | fingerprint_hash)" \
+    "$head_state" \
+    | fingerprint_hash
+}
+
+worktree_presence_hash() {
+  local inventory line path path_hash state
+  inventory=$(git -C "$TARGET" worktree list --porcelain 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*)
+        path=${line#worktree }
+        path_hash=$(printf '%s' "$path" | fingerprint_hash) || return 1
+        if [ -e "$path" ] || [ -L "$path" ]; then
+          state=present
+        else
+          state=absent
+        fi
+        printf '%s:%s\n' "$path_hash" "$state"
+        ;;
+    esac
+  done <<< "$inventory" | LC_ALL=C sort | fingerprint_hash
+}
+
+transaction_inventory_hash() {
+  local tree_hash git_hash presence_hash meta_hash backlog_hash secondmates_hash registry_hash
+  tree_hash=$(repo_inventory_hash "$TARGET") || return 1
+  git_hash=$(root_git_state_hash) || return 1
+  presence_hash=$(worktree_presence_hash) || return 1
+  meta_hash=$(state_meta_inventory_hash) || return 1
+  backlog_hash=$(optional_path_hash "$DATA/backlog.md") || return 1
+  secondmates_hash=$(optional_path_hash "$DATA/secondmates.md") || return 1
+  registry_hash=$(optional_path_hash "$REG") || return 1
+  printf 'tree:%s\ngit:%s\nworktree-presence:%s\nmeta:%s\nbacklog:%s\nsecondmates:%s\nregistry:%s\n' \
+    "$tree_hash" "$git_hash" "$presence_hash" "$meta_hash" "$backlog_hash" "$secondmates_hash" "$registry_hash" \
+    | fingerprint_hash
+}
+
+validate_discard_authority() {
+  local current_token=$1
+  [ -n "$AUTHORITY" ] || return 0
+  case "$AUTHORITY" in
+    "discard-unlanded:$NAME:"*)
+      if [ -z "$current_token" ] || [ "$AUTHORITY" != "$current_token" ]; then
+        die "discard authority does not match the CURRENT unlanded-work inventory of '$NAME' (the work changed after the token was issued, or no current discardable inventory exists); re-run --check and obtain fresh captain authority"
+      fi
+      ;;
+    discard-unlanded:*)
+      die "discard authority is scoped to a different project and cannot authorize discarding '$NAME'; nothing was changed"
+      ;;
+    *)
+      die "unrecognized discard-authority token; expected discard-unlanded:$NAME:<fingerprint> from a refusal or --check run"
+      ;;
+  esac
+}
+
+stale_repair_inventory_hash() {
+  local registry_hash clone_state
+  registry_hash=$(optional_path_hash "$REG") || return 1
+  if [ -e "$CLONE" ] || [ -L "$CLONE" ]; then
+    clone_state=present
+  else
+    clone_state=absent
+  fi
+  printf 'registry:%s\nclone:%s\n' "$registry_hash" "$clone_state" | fingerprint_hash
+}
+
+PROJECT_REMOVE_LOCK=
+PROJECT_REMOVE_LOCK_OWNER=
+PROJECT_REMOVE_LOCK_HELD=0
+
+# shellcheck disable=SC2329
+release_project_lock() {
+  if [ "$PROJECT_REMOVE_LOCK_HELD" -eq 1 ]; then
+    fm_lock_release "$PROJECT_REMOVE_LOCK"
+    PROJECT_REMOVE_LOCK_HELD=0
+  fi
+}
+
+acquire_project_lock() {
+  [ -d "$STATE" ] && [ -r "$STATE" ] && [ -w "$STATE" ] \
+    || die "refusing: state directory $STATE must be readable and writable to lock project removal"
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$SCRIPT_DIR/fm-wake-lib.sh"
+  PROJECT_REMOVE_LOCK="$STATE/.project-remove-$NAME.lock"
+  if ! fm_lock_try_acquire "$PROJECT_REMOVE_LOCK"; then
+    die "refusing: another project-removal transaction holds $PROJECT_REMOVE_LOCK"
+  fi
+  PROJECT_REMOVE_LOCK_OWNER=$FM_LOCK_OWNER_DIR
+  PROJECT_REMOVE_LOCK_HELD=1
+  trap release_project_lock EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
+verify_project_lock() {
+  if [ "$PROJECT_REMOVE_LOCK_HELD" -ne 1 ] \
+    || ! fm_lock_points_to_owner "$PROJECT_REMOVE_LOCK" "$PROJECT_REMOVE_LOCK_OWNER"; then
+    die "refusing: project-removal transaction lock was lost before mutation"
+  fi
 }
 
 registry_has_entry() {
@@ -305,7 +490,15 @@ if [ "$clone_present" -eq 0 ]; then
     printf 'stale registry: data/projects.md lists %s but no clone exists at %s; a removal run will repair the registry line\n' "$NAME" "$CLONE"
     exit 0
   fi
-  # Steps 4-5 only: re-verify absence, then drop just this registry line.
+  validate_discard_authority ""
+  stale_snapshot=$(stale_repair_inventory_hash) \
+    || die "refusing: cannot snapshot the stale registry repair inventory"
+  acquire_project_lock
+  locked_stale_snapshot=$(stale_repair_inventory_hash) \
+    || die "refusing: cannot recheck the stale registry repair inventory under lock"
+  [ "$locked_stale_snapshot" = "$stale_snapshot" ] \
+    || die "refusing: project or registry inventory changed before stale-registry repair; re-run the command"
+  verify_project_lock
   { [ ! -e "$CLONE" ] && [ ! -L "$CLONE" ]; } \
     || die "refusing: $CLONE appeared during the repair; re-run to take the full removal path"
   remove_registry_line
@@ -321,9 +514,14 @@ TARGET=$(canonical_existing_dir "$CLONE") \
   || die "refusing: $CLONE resolves to $TARGET, not $PROJECTS_PHYS/$NAME; wrong home or a relocated clone"
 [ "$TARGET" != / ] || die "refusing: resolved target is the filesystem root"
 
+ACTUAL_FM_ROOT_PHYS=$(canonical_existing_dir "$ACTUAL_FM_ROOT") \
+  || die "cannot resolve the running firstmate checkout $ACTUAL_FM_ROOT"
+case "$ACTUAL_FM_ROOT_PHYS/" in
+  "$TARGET"/*) die "refusing: this firstmate checkout ($ACTUAL_FM_ROOT_PHYS) is at or under the removal target" ;;
+esac
 FM_ROOT_PHYS=$(canonical_existing_dir "$FM_ROOT" || printf '%s' "$FM_ROOT")
 case "$FM_ROOT_PHYS/" in
-  "$TARGET"/*) die "refusing: this firstmate checkout ($FM_ROOT_PHYS) is at or under the removal target" ;;
+  "$TARGET"/*) die "refusing: configured firstmate root ($FM_ROOT_PHYS) is at or under the removal target" ;;
 esac
 case "$FM_HOME_PHYS/" in
   "$TARGET"/*) die "refusing: the active FM_HOME ($FM_HOME_PHYS) is at or under the removal target" ;;
@@ -344,6 +542,9 @@ case "$common/" in
   "$TARGET"/*) : ;;
   *) die "refusing: the git common dir of $TARGET resolves to $common, outside the clone; this is not a standalone clone" ;;
 esac
+
+initial_transaction_snapshot=$(transaction_inventory_hash) \
+  || die "refusing: cannot capture the complete project-removal inventory"
 
 STRUCTURAL=
 DISCARDABLE=
@@ -389,13 +590,13 @@ while IFS= read -r line; do
   esac
 done <<< "$worktree_inventory"
 
-dirty=$(git -C "$TARGET" status --porcelain=v1 --untracked-files=all 2>/dev/null) \
+dirty=$(git -C "$TARGET" status --porcelain=v1 --untracked-files=all --ignored=traditional 2>/dev/null) \
   || die "refusing: cannot inventory the working tree of $TARGET"
 if [ -n "$dirty" ]; then
   dirty_count=$(printf '%s\n' "$dirty" | grep -c .)
-  add_discardable "$dirty_count dirty or untracked path(s) (git status --porcelain)"
+  add_discardable "$dirty_count dirty or untracked or ignored path report(s) (git status --porcelain)"
   dirty_inventory_hash=$(repo_inventory_hash "$TARGET") \
-    || die "refusing: cannot hash the index, worktree, and untracked contents of $TARGET"
+    || die "refusing: cannot hash the index and complete deletion payload of $TARGET"
   add_fprint "dirty:$dirty_inventory_hash"
 fi
 
@@ -468,7 +669,10 @@ else
   fi
 fi
 
-if [ -d "$STATE" ]; then
+if [ -e "$STATE" ] || [ -L "$STATE" ]; then
+  [ -d "$STATE" ] || die "refusing: state path $STATE is not a directory"
+  find "$STATE" -mindepth 1 -maxdepth 1 -name '*.meta' -print >/dev/null 2>&1 \
+    || die "refusing: cannot completely enumerate live task metadata in $STATE"
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
     task_id=$(basename "$meta" .meta)
@@ -540,6 +744,11 @@ if [ -n "$DISCARDABLE" ]; then
   expected_token="discard-unlanded:$NAME:$(printf '%s' "$fp" | cut -c1-12)"
 fi
 
+checked_transaction_snapshot=$(transaction_inventory_hash) \
+  || die "refusing: cannot recheck the complete project-removal inventory"
+[ "$checked_transaction_snapshot" = "$initial_transaction_snapshot" ] \
+  || die "refusing: project-removal inventory changed while it was being checked; re-run --check"
+
 report() {
   printf 'project-remove inventory for %s (%s):\n' "$NAME" "$TARGET"
   [ -z "$INFO" ] || printf 'notes:\n%s' "$INFO"
@@ -571,31 +780,21 @@ if [ -n "$STRUCTURAL" ]; then
   exit 1
 fi
 
-if [ -n "$DISCARDABLE" ]; then
-  if [ -z "$AUTHORITY" ]; then
+if [ -n "$DISCARDABLE" ] && [ -z "$AUTHORITY" ]; then
     report
     printf 'discard token for exactly this inventory: %s\n' "$expected_token"
     printf 'authorized re-run: fm-project-remove.sh %s --confirm %s --discard-authority %s\n' "$NAME" "$NAME" "$expected_token"
     echo "REFUSED: unlanded work exists; removal requires the captain's explicit discard authority for this exact inventory." >&2
     exit 1
-  fi
-  case "$AUTHORITY" in
-    "discard-unlanded:$NAME:"*)
-      if [ "$AUTHORITY" != "$expected_token" ]; then
-        report
-        die "discard authority does not match the CURRENT unlanded-work inventory of '$NAME' (the work changed after the token was issued); re-run --check and obtain fresh captain authority"
-      fi
-      ;;
-    discard-unlanded:*)
-      die "discard authority is scoped to a different project and cannot authorize discarding '$NAME'; nothing was changed"
-      ;;
-    *)
-      die "unrecognized discard-authority token; expected discard-unlanded:$NAME:<fingerprint> from a refusal or --check run"
-      ;;
-  esac
-elif [ -n "$AUTHORITY" ]; then
-  add_info "no unlanded work; the presented discard authority was not needed"
 fi
+validate_discard_authority "$expected_token"
+
+acquire_project_lock
+locked_transaction_snapshot=$(transaction_inventory_hash) \
+  || die "refusing: cannot recheck the complete project-removal inventory under lock"
+[ "$locked_transaction_snapshot" = "$checked_transaction_snapshot" ] \
+  || die "refusing: project-removal inventory changed before mutation; re-run --check and obtain fresh authority if required"
+verify_project_lock
 
 # Step 2: prune stale worktree registrations through the supported owner tool,
 # then refuse if any linked registration survives (locked or unprunable) - the
