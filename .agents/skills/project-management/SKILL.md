@@ -77,9 +77,14 @@ If doctor reports an environment, authentication, or daemon problem, resolve tha
 
 ## Remove
 
-Project removal is destructive.
-First obtain the captain's explicit removal decision, then inspect the current digest and authoritative repositories for in-flight or queued work, registered secondmate clones, linked worktrees, dirty files, unpushed commits, and any other unlanded work.
-If any dependency or unlanded work exists, stop and report it before changing anything.
+Project removal is destructive and always captain-gated.
 Never issue a raw removal command from Firstmate.
-Once that preflight confirms none of the above and the captain's approval is concrete, AGENTS.md hard rule 1's captain-approved project operation exception authorizes firstmate to remove the clone directly and update its registry entry to match.
-When a clone has already been removed through an approved removal, or the registry is provably stale because no clone exists, remove its registry line so navigation matches reality.
+`bin/fm-project-remove.sh` owns the complete guarded removal transaction - resolution, every safety check, the discard-authority token mechanics, clone deletion, and the registry update - and its header comment is the authoritative contract.
+It is the captain-authorized guarded project-removal exception named in the prime directives, and it is the only sanctioned way a clone leaves `projects/`.
+
+First obtain the captain's explicit removal decision naming the exact project.
+Run the helper's read-only check mode to inventory blockers before removing or escalating.
+The helper refuses by default on live task metadata, open backlog items, registered secondmate clones, linked working copies, dirty or untracked files, stashes, unpushed or local-only commits, and any resolution mismatch, and it updates the registry only after the clone is confirmed gone.
+A refusal is a stop-and-report result: resolve structural blockers through their own owner paths, and never work around the helper with raw commands.
+Unlanded work may be discarded only when the captain explicitly authorizes that exact project's current inventory through the helper's object-scoped discard-authority token; vague approval never suffices.
+When a clone has already been removed through the approved guarded path, or the registry is provably stale because no clone exists, the same helper repairs the registry line so navigation matches reality.
