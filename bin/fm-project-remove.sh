@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # fm-project-remove.sh - captain-gated guarded removal transaction for one
-# registered project clone under this home's projects/ directory.
+# project clone under this home's projects/ directory, with or without a
+# registry entry.
 #
 # This is the approved guarded project-removal path referenced by AGENTS.md
 # hard rule #1 and the project-management skill: the ONLY way firstmate retires
@@ -58,10 +59,12 @@
 #      rechecked unchanged immediately before mutation
 #   2. `git worktree prune` inside the clone (supported owner tool, safe:
 #      it drops only registrations whose directories are already gone)
-#   3. the clone directory is removed
-#   4. clone absence is verified; an incomplete removal stops LOUDLY here and
-#      leaves the registry untouched, so the registry never claims a clone is
-#      gone while bytes remain
+#   3. the clone is atomically renamed into a restrictive same-filesystem
+#      quarantine, the quarantined payload and external control inventory are
+#      reverified, and only that verified quarantine is removed
+#   4. both the original clone path and quarantine are verified absent; an
+#      incomplete removal stops LOUDLY here and leaves the registry untouched,
+#      so the registry never claims a clone is gone while bytes remain
 #   5. only then is the data/projects.md line for exactly <name> dropped, via
 #      an atomic rewrite that leaves every other line byte-identical
 # The transaction never stashes, never resets, never force-deletes branches,
@@ -211,6 +214,14 @@ PROJECTS_CONFIG_PHYS=$(canonical_path "$PROJECTS") \
 [ "$PROJECTS_CONFIG_PHYS" = "$EXPECTED_PROJECTS" ] \
   || die "refusing: projects directory $PROJECTS is outside the active FM_HOME $FM_HOME"
 
+if command -v shasum >/dev/null 2>&1; then
+  HASH_TOOL=shasum
+elif command -v sha256sum >/dev/null 2>&1; then
+  HASH_TOOL=sha256sum
+else
+  die "refusing: SHA-256 is unavailable; discard-authority fingerprints cannot be created safely"
+fi
+
 fm_refuse_if_gate_agent
 if [ "$MODE_CHECK" -eq 1 ]; then
   FM_GUARD_READ_ONLY=1 "$FM_ROOT/bin/fm-guard.sh" || true
@@ -221,13 +232,17 @@ fi
 export GIT_OPTIONAL_LOCKS=0
 
 fingerprint_hash() {
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 | awk '{print $1}'
-  elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | awk '{print $1}'
-  else
-    cksum | awk '{print $1}'
-  fi
+  local digest
+  case "$HASH_TOOL" in
+    shasum) digest=$(shasum -a 256 | awk '{print $1}') || return 1 ;;
+    sha256sum) digest=$(sha256sum | awk '{print $1}') || return 1 ;;
+    *) return 1 ;;
+  esac
+  [ "${#digest}" -eq 64 ] || return 1
+  case "$digest" in
+    *[!0-9a-f]*) return 1 ;;
+  esac
+  printf '%s\n' "$digest"
 }
 
 path_mode() {
@@ -284,6 +299,24 @@ repo_inventory_hash() {
   printf 'index:%s\nfiles:%s\n' "$index_hash" "$files_hash" | fingerprint_hash
 }
 
+full_tree_inventory_hash() {
+  local root=$1 root_mode entries_hash link_hash
+  root_mode=$(path_mode "$root") || return 1
+  if [ -L "$root" ]; then
+    link_hash=$(readlink "$root" | fingerprint_hash) || return 1
+    printf 'symlink-root:%s:%s\n' "$root_mode" "$link_hash" | fingerprint_hash
+    return
+  fi
+  [ -d "$root" ] || return 1
+  entries_hash=$(
+    find "$root" -mindepth 1 -print0 \
+      | hash_inventory_entries "$root" \
+      | LC_ALL=C sort \
+      | fingerprint_hash
+  ) || return 1
+  printf 'directory-root:%s\nentries:%s\n' "$root_mode" "$entries_hash" | fingerprint_hash
+}
+
 optional_path_hash() {
   local path=$1 link_hash content_hash mode
   if [ -L "$path" ]; then
@@ -322,32 +355,100 @@ state_meta_inventory_hash() {
   printf 'meta:%s\n' "$entries_hash" | fingerprint_hash
 }
 
-root_git_state_hash() {
-  local worktrees status stashes remotes refs objects head_state
-  worktrees=$(git -C "$TARGET" worktree list --porcelain 2>/dev/null) || return 1
-  status=$(git -C "$TARGET" status --porcelain=v1 --untracked-files=all --ignored=traditional 2>/dev/null) || return 1
-  stashes=$(git -C "$TARGET" stash list --format='%H' 2>/dev/null) || return 1
-  remotes=$(git -C "$TARGET" remote 2>/dev/null) || return 1
-  refs=$(git -C "$TARGET" for-each-ref --format='%(refname) %(objectname)' 2>/dev/null) || return 1
+git_repository_state_hash() {
+  local repo=$1 include_worktrees=${2:-1} worktrees status stashes remotes refs objects head_state index_hash worktrees_hash
+  if [ "$include_worktrees" -eq 1 ]; then
+    worktrees=$(git -C "$repo" worktree list --porcelain 2>/dev/null) || return 1
+    worktrees_hash=$(printf '%s' "$worktrees" | fingerprint_hash) || return 1
+  else
+    worktrees_hash=omitted
+  fi
+  status=$(git -C "$repo" status --porcelain=v1 --untracked-files=all --ignored=traditional 2>/dev/null) || return 1
+  stashes=$(git -C "$repo" stash list --format='%H' 2>/dev/null) || return 1
+  remotes=$(git -C "$repo" remote 2>/dev/null) || return 1
+  refs=$(git -C "$repo" for-each-ref --format='%(refname) %(objectname)' 2>/dev/null) || return 1
+  index_hash=$(git -C "$repo" ls-files --stage -z | fingerprint_hash) || return 1
   objects=$(
-    git -C "$TARGET" cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype)' 2>/dev/null \
+    git -C "$repo" cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype) %(objectsize)' 2>/dev/null \
       | LC_ALL=C sort
   ) || return 1
-  if head_state=$(git -C "$TARGET" rev-parse -q --verify HEAD 2>/dev/null); then
+  if head_state=$(git -C "$repo" rev-parse -q --verify HEAD 2>/dev/null); then
     :
   else
     [ "$?" -eq 1 ] || return 1
     head_state=unborn
   fi
-  printf 'worktrees:%s\nstatus:%s\nstashes:%s\nremotes:%s\nrefs:%s\nobjects:%s\nhead:%s\n' \
-    "$(printf '%s' "$worktrees" | fingerprint_hash)" \
+  printf 'worktrees:%s\nstatus:%s\nstashes:%s\nremotes:%s\nrefs:%s\nobjects:%s\nhead:%s\nindex:%s\n' \
+    "$worktrees_hash" \
     "$(printf '%s' "$status" | fingerprint_hash)" \
     "$(printf '%s' "$stashes" | fingerprint_hash)" \
     "$(printf '%s' "$remotes" | fingerprint_hash)" \
     "$(printf '%s' "$refs" | fingerprint_hash)" \
     "$(printf '%s' "$objects" | fingerprint_hash)" \
-    "$head_state" \
+    "$head_state" "$index_hash" \
     | fingerprint_hash
+}
+
+root_git_state_hash() {
+  git_repository_state_hash "$TARGET" 1
+}
+
+nested_git_marker_records() {
+  local repo=$1 marker worktree gitdir common gitdir_phys common_phys scope path_hash gitdir_id common_id state_hash gitdir_hash common_hash modules modules_hash marker_records
+  marker_records=$(
+    find "$repo" -path "$repo/.git" -prune -o -mindepth 2 -name .git -print0 \
+      | while IFS= read -r -d '' marker; do
+        worktree=${marker%/.git}
+        gitdir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+        common=$(git -C "$worktree" rev-parse --git-common-dir 2>/dev/null) || return 1
+        case "$common" in
+          /*) : ;;
+          *) common="$worktree/$common" ;;
+        esac
+        gitdir_phys=$(canonical_existing_dir "$gitdir") || return 1
+        common_phys=$(canonical_existing_dir "$common") || return 1
+        scope=inside
+        case "$gitdir_phys/" in "$repo"/*) : ;; *) scope=external ;; esac
+        case "$common_phys/" in "$repo"/*) : ;; *) scope=external ;; esac
+        path_hash=$(printf '%s' "${marker#"$repo"/}" | fingerprint_hash) || return 1
+        case "$gitdir_phys/" in
+          "$repo"/*) gitdir_id=${gitdir_phys#"$repo"/} ;;
+          *) gitdir_id=$gitdir_phys ;;
+        esac
+        case "$common_phys/" in
+          "$repo"/*) common_id=${common_phys#"$repo"/} ;;
+          *) common_id=$common_phys ;;
+        esac
+        gitdir_id=$(printf '%s' "$gitdir_id" | fingerprint_hash) || return 1
+        common_id=$(printf '%s' "$common_id" | fingerprint_hash) || return 1
+        state_hash=$(git_repository_state_hash "$worktree" 0) || return 1
+        gitdir_hash=$(full_tree_inventory_hash "$gitdir_phys") || return 1
+        if [ "$common_phys" = "$gitdir_phys" ]; then
+          common_hash=$gitdir_hash
+        else
+          common_hash=$(full_tree_inventory_hash "$common_phys") || return 1
+        fi
+        printf 'repo:%s:%s:%s:%s:%s:%s\n' "$path_hash" "$scope" "$gitdir_id" "$common_id" "$state_hash" \
+          "$(printf 'gitdir:%s\ncommon:%s\n' "$gitdir_hash" "$common_hash" | fingerprint_hash)"
+        done
+  ) || return 1
+  [ -z "$marker_records" ] || printf '%s\n' "$marker_records"
+  modules="$repo/.git/modules"
+  if [ -e "$modules" ] || [ -L "$modules" ]; then
+    modules_hash=$(full_tree_inventory_hash "$modules") || return 1
+    if [ -L "$modules" ]; then
+      scope=external
+    else
+      scope=inside
+    fi
+    printf 'modules:%s:%s\n' "$scope" "$modules_hash"
+  fi
+}
+
+nested_git_state_hash() {
+  local repo=$1 records
+  records=$(nested_git_marker_records "$repo") || return 1
+  printf '%s' "$records" | LC_ALL=C sort | fingerprint_hash
 }
 
 worktree_presence_hash() {
@@ -370,17 +471,65 @@ worktree_presence_hash() {
 }
 
 transaction_inventory_hash() {
-  local tree_hash git_hash presence_hash meta_hash backlog_hash secondmates_hash registry_hash
+  local tree_hash git_hash nested_hash presence_hash meta_hash backlog_hash secondmates_hash registry_hash
   tree_hash=$(repo_inventory_hash "$TARGET") || return 1
   git_hash=$(root_git_state_hash) || return 1
+  nested_hash=$(nested_git_state_hash "$TARGET") || return 1
   presence_hash=$(worktree_presence_hash) || return 1
   meta_hash=$(state_meta_inventory_hash) || return 1
   backlog_hash=$(optional_path_hash "$DATA/backlog.md") || return 1
   secondmates_hash=$(optional_path_hash "$DATA/secondmates.md") || return 1
   registry_hash=$(optional_path_hash "$REG") || return 1
-  printf 'tree:%s\ngit:%s\nworktree-presence:%s\nmeta:%s\nbacklog:%s\nsecondmates:%s\nregistry:%s\n' \
-    "$tree_hash" "$git_hash" "$presence_hash" "$meta_hash" "$backlog_hash" "$secondmates_hash" "$registry_hash" \
+  printf 'tree:%s\ngit:%s\nnested:%s\nworktree-presence:%s\nmeta:%s\nbacklog:%s\nsecondmates:%s\nregistry:%s\n' \
+    "$tree_hash" "$git_hash" "$nested_hash" "$presence_hash" "$meta_hash" "$backlog_hash" "$secondmates_hash" "$registry_hash" \
     | fingerprint_hash
+}
+
+control_inventory_hash() {
+  local meta_hash backlog_hash secondmates_hash registry_hash
+  meta_hash=$(state_meta_inventory_hash) || return 1
+  backlog_hash=$(optional_path_hash "$DATA/backlog.md") || return 1
+  secondmates_hash=$(optional_path_hash "$DATA/secondmates.md") || return 1
+  registry_hash=$(optional_path_hash "$REG") || return 1
+  printf 'meta:%s\nbacklog:%s\nsecondmates:%s\nregistry:%s\n' \
+    "$meta_hash" "$backlog_hash" "$secondmates_hash" "$registry_hash" | fingerprint_hash
+}
+
+deletion_boundary_hash() {
+  local repo=$1 tree_hash git_hash nested_hash
+  tree_hash=$(repo_inventory_hash "$repo") || return 1
+  git_hash=$(git_repository_state_hash "$repo" 0) || return 1
+  nested_hash=$(nested_git_state_hash "$repo") || return 1
+  printf 'tree:%s\ngit:%s\nnested:%s\n' "$tree_hash" "$git_hash" "$nested_hash" | fingerprint_hash
+}
+
+normalized_worktree_state_hash() {
+  local repo=$1 inventory line path path_hash state first=1 records=
+  inventory=$(git -C "$repo" worktree list --porcelain 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*)
+        path=${line#worktree }
+        if [ "$first" -eq 1 ]; then
+          records="${records}primary"$'\n'
+          first=0
+        else
+          path_hash=$(printf '%s' "$path" | fingerprint_hash) || return 1
+          if [ -e "$path" ] || [ -L "$path" ]; then state=present; else state=absent; fi
+          records="${records}linked:$path_hash:$state"$'\n'
+        fi
+        ;;
+    esac
+  done <<< "$inventory"
+  [ "$first" -eq 0 ] || return 1
+  printf '%s' "$records" | LC_ALL=C sort | fingerprint_hash
+}
+
+quarantine_boundary_hash() {
+  local repo=$1 deletion_hash worktree_hash
+  deletion_hash=$(deletion_boundary_hash "$repo") || return 1
+  worktree_hash=$(normalized_worktree_state_hash "$repo") || return 1
+  printf 'deletion:%s\nworktrees:%s\n' "$deletion_hash" "$worktree_hash" | fingerprint_hash
 }
 
 validate_discard_authority() {
@@ -415,9 +564,20 @@ stale_repair_inventory_hash() {
 PROJECT_REMOVE_LOCK=
 PROJECT_REMOVE_LOCK_OWNER=
 PROJECT_REMOVE_LOCK_HELD=0
+REGISTRY_TMP=
+QUARANTINE_PARENT=
+QUARANTINE=
+QUARANTINE_PRESERVE=0
 
 # shellcheck disable=SC2329
 release_project_lock() {
+  if [ -n "$REGISTRY_TMP" ]; then
+    rm -f -- "$REGISTRY_TMP" 2>/dev/null || true
+    REGISTRY_TMP=
+  fi
+  if [ -n "$QUARANTINE_PARENT" ] && [ "$QUARANTINE_PRESERVE" -eq 0 ]; then
+    rmdir "$QUARANTINE_PARENT" 2>/dev/null || true
+  fi
   if [ "$PROJECT_REMOVE_LOCK_HELD" -eq 1 ]; then
     fm_lock_release "$PROJECT_REMOVE_LOCK"
     PROJECT_REMOVE_LOCK_HELD=0
@@ -448,7 +608,40 @@ verify_project_lock() {
   fi
 }
 
+prepare_project_quarantine() {
+  local old_umask mode
+  old_umask=$(umask)
+  umask 077
+  if ! QUARANTINE_PARENT=$(mktemp -d "$PROJECTS/.fm-project-remove-$NAME.XXXXXX"); then
+    umask "$old_umask"
+    die "refusing: could not create a same-directory project quarantine under $PROJECTS"
+  fi
+  umask "$old_umask"
+  [ -d "$QUARANTINE_PARENT" ] && [ ! -L "$QUARANTINE_PARENT" ] \
+    || die "refusing: project quarantine is not an ordinary directory: $QUARANTINE_PARENT"
+  chmod 700 "$QUARANTINE_PARENT" \
+    || die "refusing: could not restrict project quarantine $QUARANTINE_PARENT"
+  mode=$(path_mode "$QUARANTINE_PARENT") || die "refusing: cannot inspect project quarantine $QUARANTINE_PARENT"
+  [ "$mode" = 700 ] || die "refusing: project quarantine $QUARANTINE_PARENT has unsafe mode $mode"
+  QUARANTINE="$QUARANTINE_PARENT/clone"
+}
+
+refuse_quarantined_change() {
+  local reason=$1
+  if [ ! -e "$TARGET" ] && [ ! -L "$TARGET" ] && [ -d "$QUARANTINE" ] && [ ! -L "$QUARANTINE" ]; then
+    if mv "$QUARANTINE" "$TARGET"; then
+      rmdir "$QUARANTINE_PARENT" 2>/dev/null || true
+      QUARANTINE=
+      QUARANTINE_PARENT=
+      die "$reason; the quarantined clone was restored to $TARGET"
+    fi
+  fi
+  QUARANTINE_PRESERVE=1
+  die "$reason; registry left untouched and quarantined bytes preserved at $QUARANTINE"
+}
+
 registry_has_entry() {
+  [ ! -L "$REG" ] || die "refusing: project registry $REG is a symlink"
   [ -f "$REG" ] || return 1
   [ -r "$REG" ] || die "cannot read project registry $REG"
   awk -v n="$NAME" '$1 == "-" && $2 == n { found = 1; exit } END { exit found ? 0 : 1 }' "$REG"
@@ -457,10 +650,26 @@ registry_has_entry() {
 # Atomic registry rewrite dropping exactly the "- <name> ..." line(s); every
 # other line is passed through byte-identical. Verified after the swap.
 remove_registry_line() {
-  local tmp="$REG.tmp.$$"
-  awk -v n="$NAME" '!($1 == "-" && $2 == n)' "$REG" > "$tmp" \
-    || { rm -f "$tmp"; die "could not rewrite $REG; registry left untouched"; }
-  mv "$tmp" "$REG" || { rm -f "$tmp"; die "could not replace $REG; registry left untouched"; }
+  local old_umask tmp_mode reg_mode
+  [ -f "$REG" ] && [ ! -L "$REG" ] || die "could not rewrite $REG; registry is not an ordinary file"
+  reg_mode=$(path_mode "$REG") || die "could not inspect $REG; registry left untouched"
+  old_umask=$(umask)
+  umask 077
+  if ! REGISTRY_TMP=$(mktemp "$DATA/.projects.md.tmp.XXXXXX"); then
+    umask "$old_umask"
+    die "could not create a restrictive same-directory temporary registry file; registry left untouched"
+  fi
+  umask "$old_umask"
+  [ -f "$REGISTRY_TMP" ] && [ ! -L "$REGISTRY_TMP" ] \
+    || die "could not create an ordinary temporary registry file; registry left untouched"
+  tmp_mode=$(path_mode "$REGISTRY_TMP") || die "could not inspect the temporary registry file; registry left untouched"
+  [ "$tmp_mode" = 600 ] || die "temporary registry file has unsafe mode $tmp_mode; registry left untouched"
+  awk -v n="$NAME" '!($1 == "-" && $2 == n)' "$REG" > "$REGISTRY_TMP" \
+    || die "could not rewrite $REG; registry left untouched"
+  chmod "$reg_mode" "$REGISTRY_TMP" \
+    || die "could not preserve the mode of $REG; registry left untouched"
+  mv "$REGISTRY_TMP" "$REG" || die "could not replace $REG; registry left untouched"
+  REGISTRY_TMP=
   if registry_has_entry; then
     die "registry rewrite failed to drop the '$NAME' line from $REG"
   fi
@@ -589,6 +798,20 @@ while IFS= read -r line; do
       ;;
   esac
 done <<< "$worktree_inventory"
+
+nested_git_records=$(nested_git_marker_records "$TARGET") \
+  || die "refusing: cannot completely inventory nested repository state in $TARGET"
+if [ -n "$nested_git_records" ]; then
+  nested_git_count=$(printf '%s\n' "$nested_git_records" | awk '/^repo:/ { count++ } END { print count + 0 }')
+  nested_modules_count=$(printf '%s\n' "$nested_git_records" | awk '/^modules:/ { count++ } END { print count + 0 }')
+  nested_external_count=$(printf '%s\n' "$nested_git_records" | awk -F: '$1 == "repo" && $3 == "external" { count++ } $1 == "modules" && $2 == "external" { count++ } END { print count + 0 }')
+  [ "$nested_external_count" -eq 0 ] \
+    || add_structural "$nested_external_count nested repository gitdir(s) resolve outside the clone; detach them through Git tooling before removal"
+  add_discardable "$nested_git_count nested repository worktree(s) and $nested_modules_count submodule gitdir store(s)"
+  nested_git_inventory_hash=$(printf '%s\n' "$nested_git_records" | LC_ALL=C sort | fingerprint_hash) \
+    || die "refusing: cannot fingerprint nested repository state in $TARGET"
+  add_fprint "nested:$nested_git_inventory_hash"
+fi
 
 dirty=$(git -C "$TARGET" status --porcelain=v1 --untracked-files=all --ignored=traditional 2>/dev/null) \
   || die "refusing: cannot inventory the working tree of $TARGET"
@@ -741,7 +964,7 @@ fi
 expected_token=
 if [ -n "$DISCARDABLE" ]; then
   fp=$(printf 'project:%s\n%s' "$NAME" "$FPRINT" | LC_ALL=C sort | fingerprint_hash)
-  expected_token="discard-unlanded:$NAME:$(printf '%s' "$fp" | cut -c1-12)"
+  expected_token="discard-unlanded:$NAME:$fp"
 fi
 
 checked_transaction_snapshot=$(transaction_inventory_hash) \
@@ -794,6 +1017,14 @@ locked_transaction_snapshot=$(transaction_inventory_hash) \
   || die "refusing: cannot recheck the complete project-removal inventory under lock"
 [ "$locked_transaction_snapshot" = "$checked_transaction_snapshot" ] \
   || die "refusing: project-removal inventory changed before mutation; re-run --check and obtain fresh authority if required"
+authorized_deletion_snapshot=$(deletion_boundary_hash "$TARGET") \
+  || die "refusing: cannot capture the authorized deletion payload under lock"
+authorized_control_snapshot=$(control_inventory_hash) \
+  || die "refusing: cannot capture the authorized external control inventory under lock"
+prepared_transaction_snapshot=$(transaction_inventory_hash) \
+  || die "refusing: cannot complete the final project-removal inventory check under lock"
+[ "$prepared_transaction_snapshot" = "$locked_transaction_snapshot" ] \
+  || die "refusing: project-removal inventory changed while preparing the deletion boundary; re-run --check"
 verify_project_lock
 
 # Step 2: prune stale worktree registrations through the supported owner tool,
@@ -817,13 +1048,57 @@ if [ "$leftover_wt" -gt 0 ]; then
   die "refusing: $leftover_wt linked worktree registration(s) survived git worktree prune (locked or unprunable); resolve them through git worktree tooling first - clone and registry left untouched"
 fi
 
-# Step 3: remove the verified clone. TARGET is canonical, non-root, and proven
-# to be exactly $PROJECTS_PHYS/$NAME above; nothing outside it is touched.
-rm_err=$(rm -rf -- "$TARGET" 2>&1 >/dev/null) || true
-if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
-  [ -z "$rm_err" ] || printf '%s\n' "$rm_err" >&2
-  die "removal incomplete: $TARGET still exists; the registry was left untouched so it never claims a clone is gone while bytes remain"
+post_prune_deletion_snapshot=$(deletion_boundary_hash "$TARGET") \
+  || die "refusing: cannot revalidate the deletion payload after git worktree prune"
+[ "$post_prune_deletion_snapshot" = "$authorized_deletion_snapshot" ] \
+  || die "refusing: project payload changed during git worktree prune; clone and registry left untouched"
+post_prune_control_snapshot=$(control_inventory_hash) \
+  || die "refusing: cannot revalidate external control inventory after git worktree prune"
+[ "$post_prune_control_snapshot" = "$authorized_control_snapshot" ] \
+  || die "refusing: external control inventory changed during git worktree prune; clone and registry left untouched"
+pre_quarantine_snapshot=$(quarantine_boundary_hash "$TARGET") \
+  || die "refusing: cannot capture the post-prune quarantine boundary"
+pre_rename_inventory=$(git -C "$TARGET" worktree list --porcelain 2>/dev/null) \
+  || die "refusing: cannot perform the deletion-boundary worktree recheck"
+pre_rename_worktree_count=$(printf '%s\n' "$pre_rename_inventory" | awk '/^worktree / { count++ } END { print count + 0 }') \
+  || die "refusing: cannot count deletion-boundary worktrees"
+[ "$pre_rename_worktree_count" -eq 1 ] \
+  || die "refusing: a linked worktree appeared at the deletion boundary; clone and registry left untouched"
+verify_project_lock
+
+prepare_project_quarantine
+mv "$TARGET" "$QUARANTINE" \
+  || die "refusing: could not atomically move $TARGET into same-directory quarantine; clone and registry left untouched"
+if [ -e "$TARGET" ] || [ -L "$TARGET" ] || [ ! -d "$QUARANTINE" ] || [ -L "$QUARANTINE" ]; then
+  QUARANTINE_PRESERVE=1
+  die "refusing: the clone quarantine boundary is ambiguous; registry left untouched and bytes preserved at $QUARANTINE"
 fi
+quarantined_snapshot=$(quarantine_boundary_hash "$QUARANTINE") \
+  || refuse_quarantined_change "refusing: cannot verify the quarantined project payload"
+[ "$quarantined_snapshot" = "$pre_quarantine_snapshot" ] \
+  || refuse_quarantined_change "refusing: quarantined project payload differs from the authorized deletion boundary"
+quarantined_control_snapshot=$(control_inventory_hash) \
+  || refuse_quarantined_change "refusing: cannot verify external control inventory after quarantine"
+[ "$quarantined_control_snapshot" = "$authorized_control_snapshot" ] \
+  || refuse_quarantined_change "refusing: external control inventory changed at the quarantine boundary"
+verify_project_lock
+if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
+  QUARANTINE_PRESERVE=1
+  die "refusing: $TARGET was recreated after quarantine; registry left untouched and quarantined bytes preserved at $QUARANTINE"
+fi
+
+rm_err=$(rm -rf -- "$QUARANTINE" 2>&1 >/dev/null) || true
+if [ -e "$QUARANTINE" ] || [ -L "$QUARANTINE" ]; then
+  QUARANTINE_PRESERVE=1
+  [ -z "$rm_err" ] || printf '%s\n' "$rm_err" >&2
+  die "removal incomplete: quarantined clone bytes remain at $QUARANTINE; the registry was left untouched"
+fi
+[ ! -e "$TARGET" ] && [ ! -L "$TARGET" ] \
+  || die "removal incomplete: $TARGET reappeared; the registry was left untouched"
+rmdir "$QUARANTINE_PARENT" \
+  || die "removal incomplete: quarantine parent $QUARANTINE_PARENT is not empty; the registry was left untouched"
+QUARANTINE=
+QUARANTINE_PARENT=
 
 # Step 5: registry line drop, only now that clone absence is confirmed.
 if [ "$reg_present" -eq 1 ]; then

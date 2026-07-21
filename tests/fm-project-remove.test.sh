@@ -42,6 +42,11 @@
 #   (x) incomplete state metadata enumeration refuses closed
 #   (y) a per-project lock serializes removals and a final inventory comparison
 #       catches writes that race the transaction
+#   (z) clean submodule gitdirs, refs, stashes, and objects require exact
+#       authority independently of the outer worktree status
+#   (aa) post-prune and post-rename writes refuse without deleting raced bytes
+#   (ab) registry rewrites use restrictive unpredictable same-directory temps
+#   (ac) discard authority uses full SHA-256 and has no weak fallback
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -51,6 +56,8 @@ fm_git_identity
 REMOVE="$ROOT/bin/fm-project-remove.sh"
 REAL_GIT=$(command -v git)
 REAL_FIND=$(command -v find)
+REAL_MV=$(command -v mv)
+REAL_MKTEMP=$(command -v mktemp)
 TMP_ROOT=$(fm_test_tmproot fm-project-remove-tests)
 
 make_home() {
@@ -186,7 +193,7 @@ test_confirm_required_and_exact() {
 }
 
 test_dirty_refusal_and_scoped_discard_flow() {
-  local home="$TMP_ROOT/dirty" out code token stale_token fresh_token
+  local home="$TMP_ROOT/dirty" out code token token_fingerprint stale_token fresh_token
   make_home "$home"
   make_landed_clone "$home" alpha
   add_registry "$home" alpha
@@ -203,6 +210,8 @@ test_dirty_refusal_and_scoped_discard_flow() {
   assert_present "$home/projects/alpha" "dirty refusal still removed the clone"
   token=$(extract_token "$out")
   [ -n "$token" ] || fail "could not extract discard token"
+  token_fingerprint=${token##*:}
+  [ "${#token_fingerprint}" -eq 64 ] || fail "discard token did not use a full SHA-256 fingerprint"
 
   echo changed >> "$home/projects/alpha/README.md"
   git -C "$home/projects/alpha" add README.md
@@ -319,6 +328,54 @@ test_ignored_and_nested_repository_state_is_scoped() {
   expect_code 0 "$code" "fresh ignored inventory authority"
   assert_absent "$home/projects/alpha" "fresh ignored-inventory authority did not remove the clone"
   pass "ignored payloads and nested repository state are exact authority inventory"
+}
+
+test_clean_submodule_git_state_is_scoped() {
+  local home="$TMP_ROOT/submodule-state" sub_source sub_origin submodule out code token fresh_token base
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  sub_source="$home/sub-source"
+  sub_origin="$home/sub-origin.git"
+  fm_git_init_commit "$sub_source"
+  git clone --quiet --bare "$sub_source" "$sub_origin"
+  git -C "$home/projects/alpha" -c protocol.file.allow=always submodule add -q "file://$sub_origin" vendor/sub
+  git -C "$home/projects/alpha" commit -qm "add submodule"
+  git -C "$home/projects/alpha" push -q origin HEAD
+  submodule="$home/projects/alpha/vendor/sub"
+  [ -z "$(git -C "$home/projects/alpha" status --porcelain=v1)" ] || fail "submodule fixture left the outer clone dirty"
+
+  out=$(run_remove "$home" alpha --check)
+  code=$?
+  expect_code 1 "$code" "clean submodule state refusal"
+  assert_contains "$out" "nested repository worktree" "clean submodule state was not classified as discardable"
+  token=$(extract_token "$out")
+  [ -n "$token" ] || fail "clean submodule state did not produce a token"
+
+  base=$(git -C "$submodule" rev-parse HEAD)
+  git -C "$submodule" tag nested-ref-only
+  printf 'stash-only\n' >> "$submodule/README.md"
+  git -C "$submodule" stash -q
+  printf 'object-only\n' > "$submodule/object-only.txt"
+  git -C "$submodule" add object-only.txt
+  git -C "$submodule" commit -qm "nested unreachable object"
+  git -C "$submodule" reset -q --hard "$base"
+  [ -z "$(git -C "$home/projects/alpha" status --porcelain=v1)" ] || fail "nested metadata mutation changed outer status"
+
+  out=$(run_remove "$home" alpha --confirm alpha --discard-authority "$token")
+  code=$?
+  expect_code 1 "$code" "stale clean-submodule authority"
+  assert_contains "$out" "does not match the CURRENT" "nested refs, stash, and objects did not invalidate authority"
+  assert_present "$home/projects/alpha" "stale nested authority removed the clone"
+
+  out=$(run_remove "$home" alpha --check)
+  fresh_token=$(extract_token "$out")
+  [ -n "$fresh_token" ] || fail "changed clean-submodule state did not produce a fresh token"
+  out=$(run_remove "$home" alpha --confirm alpha --discard-authority "$fresh_token")
+  code=$?
+  expect_code 0 "$code" "fresh clean-submodule authority"
+  assert_absent "$home/projects/alpha" "fresh clean-submodule authority did not remove the clone"
+  pass "clean submodule refs, stashes, and objects are exact authority inventory"
 }
 
 test_unpushed_branch_and_stash_refuse() {
@@ -561,7 +618,8 @@ test_state_enumeration_failure_refuses_closed() {
 }
 
 test_transaction_lock_and_final_inventory_recheck() {
-  local home="$TMP_ROOT/transaction" fakebin owner lock marker out code
+  local home="$TMP_ROOT/transaction" prune_home="$TMP_ROOT/prune-race" quarantine_home="$TMP_ROOT/quarantine-race" \
+    recreate_home="$TMP_ROOT/quarantine-recreate" fakebin owner lock marker out code preserved
   make_home "$home"
   make_landed_clone "$home" alpha
   add_registry "$home" alpha
@@ -602,6 +660,83 @@ test_transaction_lock_and_final_inventory_recheck() {
   assert_present "$home/projects/alpha" "racing write was deleted"
   assert_grep '- alpha ' "$home/data/projects.md" "racing write refusal changed the registry"
   assert_absent "$lock" "project-removal lock survived transaction refusal"
+
+  make_home "$prune_home"
+  make_landed_clone "$prune_home" alpha
+  add_registry "$prune_home" alpha
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-git-prune-race")
+  # shellcheck disable=SC2016
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -u' \
+    'args=" $*"' \
+    'if [[ "$args" == *" worktree prune"* ]]; then' \
+    '  "$FM_REAL_GIT" "$@" || exit $?' \
+    '  printf "post-prune race\n" > "$FM_TEST_RACE_TARGET/post-prune-raced.txt"' \
+    '  exit 0' \
+    'fi' \
+    'exec "$FM_REAL_GIT" "$@"' > "$fakebin/git"
+  chmod +x "$fakebin/git"
+  out=$(PATH="$fakebin:$PATH" FM_REAL_GIT="$REAL_GIT" FM_TEST_RACE_TARGET="$prune_home/projects/alpha" \
+    FM_HOME="$prune_home" "$REMOVE" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "post-prune payload race refusal"
+  assert_contains "$out" "payload changed during git worktree prune" "post-prune payload race was not detected"
+  assert_present "$prune_home/projects/alpha/post-prune-raced.txt" "post-prune raced bytes were deleted"
+  assert_grep '- alpha ' "$prune_home/data/projects.md" "post-prune race changed the registry"
+
+  make_home "$quarantine_home"
+  make_landed_clone "$quarantine_home" alpha
+  add_registry "$quarantine_home" alpha
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-mv-quarantine-race")
+  # shellcheck disable=SC2016
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -u' \
+    'if [ "${1:-}" = "$FM_TEST_RACE_TARGET" ] && [ ! -e "$FM_TEST_RACE_MARKER" ]; then' \
+    '  : > "$FM_TEST_RACE_MARKER"' \
+    '  "$FM_REAL_MV" "$@" || exit $?' \
+    '  printf "post-rename race\n" > "$2/post-rename-raced.txt"' \
+    '  exit 0' \
+    'fi' \
+    'exec "$FM_REAL_MV" "$@"' > "$fakebin/mv"
+  chmod +x "$fakebin/mv"
+  marker="$quarantine_home/rename-race-fired"
+  out=$(PATH="$fakebin:$PATH" FM_REAL_MV="$REAL_MV" FM_TEST_RACE_TARGET="$quarantine_home/projects/alpha" \
+    FM_TEST_RACE_MARKER="$marker" FM_HOME="$quarantine_home" "$REMOVE" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "post-rename payload race refusal"
+  assert_contains "$out" "quarantined project payload differs" "post-rename payload race was not detected"
+  assert_present "$quarantine_home/projects/alpha/post-rename-raced.txt" "post-rename raced bytes were not restored"
+  assert_grep '- alpha ' "$quarantine_home/data/projects.md" "post-rename race changed the registry"
+  preserved=$(find "$quarantine_home/projects" -maxdepth 1 -name '.fm-project-remove-alpha.*' -print)
+  [ -z "$preserved" ] || fail "restored post-rename race left an unnecessary quarantine"
+
+  make_home "$recreate_home"
+  make_landed_clone "$recreate_home" alpha
+  add_registry "$recreate_home" alpha
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-mv-target-recreate")
+  # shellcheck disable=SC2016
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -u' \
+    'if [ "${1:-}" = "$FM_TEST_RACE_TARGET" ]; then' \
+    '  "$FM_REAL_MV" "$@" || exit $?' \
+    '  mkdir "$FM_TEST_RACE_TARGET"' \
+    '  printf "replacement\n" > "$FM_TEST_RACE_TARGET/replacement.txt"' \
+    '  exit 0' \
+    'fi' \
+    'exec "$FM_REAL_MV" "$@"' > "$fakebin/mv"
+  chmod +x "$fakebin/mv"
+  out=$(PATH="$fakebin:$PATH" FM_REAL_MV="$REAL_MV" FM_TEST_RACE_TARGET="$recreate_home/projects/alpha" \
+    FM_HOME="$recreate_home" "$REMOVE" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "target recreation at quarantine boundary"
+  assert_contains "$out" "quarantine boundary is ambiguous" "recreated target was not detected"
+  assert_present "$recreate_home/projects/alpha/replacement.txt" "recreated target was deleted"
+  preserved=$(find "$recreate_home/projects" -path '*/.fm-project-remove-alpha.*/clone' -type d -print)
+  [ -n "$preserved" ] || fail "authorized clone bytes were not preserved after target recreation"
+  assert_grep '- alpha ' "$recreate_home/data/projects.md" "target recreation changed the registry"
   pass "project removal holds a lock and rechecks inventory before mutation"
 }
 
@@ -626,10 +761,87 @@ test_git_inspection_failures_refuse_closed() {
   pass "mandatory Git inspection and prune failures refuse closed"
 }
 
+test_sha256_is_required_and_full_length() {
+  local home="$TMP_ROOT/sha-required" fakebin marker out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  printf 'dirty\n' > "$home/projects/alpha/dirty.txt"
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-sha-failure")
+  marker="$home/cksum-used"
+  printf '#!/usr/bin/env bash\nexit 86\n' > "$fakebin/shasum"
+  # shellcheck disable=SC2016
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    ': > "$FM_TEST_CKSUM_MARKER"' \
+    'exit 0' > "$fakebin/cksum"
+  chmod +x "$fakebin/shasum" "$fakebin/cksum"
+
+  out=$(PATH="$fakebin:$PATH" FM_TEST_CKSUM_MARKER="$marker" FM_HOME="$home" \
+    "$REMOVE" alpha --check 2>&1)
+  code=$?
+  expect_code 1 "$code" "SHA-256 execution failure"
+  assert_not_contains "$out" "discard-unlanded:" "failed SHA-256 produced an authority token"
+  assert_absent "$marker" "weak cksum fallback was invoked"
+  assert_present "$home/projects/alpha" "SHA-256 failure removed the clone"
+  pass "discard authority requires a full SHA-256 digest without weak fallback"
+}
+
+test_registry_rewrite_uses_secure_temp() {
+  local home="$TMP_ROOT/registry-temp" fakebin sentinel candidate out code leftovers
+  make_home "$home"
+  add_registry "$home" alpha
+  add_registry "$home" beta
+  sentinel="$home/external-sentinel"
+  candidate="$home/data/.projects.md.tmp.attacker"
+  printf 'external sentinel\n' > "$sentinel"
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-registry-mktemp")
+  # shellcheck disable=SC2016
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -u' \
+    'case " $*" in' \
+    '  *"/.projects.md.tmp.XXXXXX"*)' \
+    '    ln -s "$FM_TEST_SENTINEL" "$FM_TEST_TEMP_CANDIDATE"' \
+    '    printf "%s\n" "$FM_TEST_TEMP_CANDIDATE"' \
+    '    exit 0' \
+    '    ;;' \
+    'esac' \
+    'exec "$FM_REAL_MKTEMP" "$@"' > "$fakebin/mktemp"
+  chmod +x "$fakebin/mktemp"
+
+  out=$(PATH="$fakebin:$PATH" FM_REAL_MKTEMP="$REAL_MKTEMP" FM_TEST_SENTINEL="$sentinel" \
+    FM_TEST_TEMP_CANDIDATE="$candidate" FM_HOME="$home" "$REMOVE" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "symlinked registry temp refusal"
+  assert_contains "$out" "ordinary temporary registry file" "symlinked mktemp result was not rejected"
+  [ "$(cat "$sentinel")" = "external sentinel" ] || fail "registry rewrite followed the malicious temp symlink"
+  assert_grep '- alpha ' "$home/data/projects.md" "failed secure registry rewrite changed alpha"
+  assert_grep '- beta ' "$home/data/projects.md" "failed secure registry rewrite changed beta"
+  assert_absent "$candidate" "failed registry rewrite leaked its temporary symlink"
+
+  out=$(run_remove "$home" alpha --confirm alpha)
+  code=$?
+  expect_code 0 "$code" "secure stale-registry repair"
+  assert_no_grep '- alpha ' "$home/data/projects.md" "secure registry rewrite left alpha"
+  assert_grep '- beta ' "$home/data/projects.md" "secure registry rewrite disturbed beta"
+  leftovers=$(find "$home/data" -maxdepth 1 -name '.projects.md.tmp.*' -print)
+  [ -z "$leftovers" ] || fail "secure registry rewrite leaked temporary files"
+  pass "registry rewrites reject symlink temps and clean restrictive same-directory files"
+}
+
 test_instruction_contract_scopes_discard_authority() {
   assert_grep "discarding unlanded work outside the guarded project-removal path's exact captain-authorized inventory token" \
     "$ROOT/AGENTS.md" "prime directive does not recognize only the scoped project-removal token"
   pass "prime directive permits only exact token-authorized project discard"
+}
+
+test_scripts_catalog_allows_optional_registry() {
+  assert_grep 'project clone with an optional registry entry' "$ROOT/docs/scripts.md" \
+    "scripts catalog incorrectly requires a registry entry"
+  assert_grep 'with or without a' "$ROOT/bin/fm-project-remove.sh" \
+    "helper header incorrectly requires a registered clone"
+  pass "script documentation treats the registry entry as optional"
 }
 
 test_linked_worktree_refuses_then_prunes_stale() {
@@ -720,7 +932,7 @@ test_gitfile_clone_refuses() {
 }
 
 test_partial_failure_leaves_registry_untouched() {
-  local home="$TMP_ROOT/partial" out code
+  local home="$TMP_ROOT/partial" out code preserved
   if [ "$(id -u)" -eq 0 ]; then
     pass "partial-failure refusal (skipped: root can always delete)"
     return 0
@@ -738,10 +950,12 @@ test_partial_failure_leaves_registry_untouched() {
 
   out=$(run_remove "$home" alpha --confirm alpha)
   code=$?
-  chmod 755 "$home/projects/alpha/sub" 2>/dev/null || true
+  preserved=$(find "$home/projects" -path '*/.fm-project-remove-alpha.*/clone' -type d -print | head -1)
+  [ -z "$preserved" ] || chmod 755 "$preserved/sub" 2>/dev/null || true
   expect_code 1 "$code" "partial failure refusal"
   assert_contains "$out" "removal incomplete" "partial removal not reported"
-  assert_present "$home/projects/alpha" "partial state unexpectedly fully removed"
+  [ -n "$preserved" ] || fail "partial deletion did not preserve the quarantined clone"
+  assert_present "$preserved" "partial state unexpectedly fully removed"
   assert_grep '- alpha ' "$home/data/projects.md" "partial failure still mutated the registry"
   pass "a failed deletion stops loudly and never touches the registry"
 }
@@ -815,6 +1029,7 @@ test_confirm_required_and_exact
 test_dirty_refusal_and_scoped_discard_flow
 test_discard_authority_is_project_scoped
 test_ignored_and_nested_repository_state_is_scoped
+test_clean_submodule_git_state_is_scoped
 test_unpushed_branch_and_stash_refuse
 test_no_remote_repository_refuses_then_discards
 test_live_task_metadata_refuses_structurally
@@ -833,6 +1048,9 @@ test_root_override_cannot_hide_running_checkout
 test_state_enumeration_failure_refuses_closed
 test_transaction_lock_and_final_inventory_recheck
 test_git_inspection_failures_refuse_closed
+test_sha256_is_required_and_full_length
+test_registry_rewrite_uses_secure_temp
 test_instruction_contract_scopes_discard_authority
+test_scripts_catalog_allows_optional_registry
 
 echo "all fm-project-remove tests passed"
