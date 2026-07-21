@@ -9,13 +9,13 @@
 #   (b) --check is read-only on a clean clone and reports clean
 #   (c) removal requires --confirm with the exact name; a mismatch refuses
 #       before any mutation
-#   (d) dirty/untracked work refuses with a state-scoped discard token; a token
-#       issued before the inventory changed refuses; a fresh token discards
+#   (d) dirty/untracked work refuses with a state-scoped discard token; same-path
+#       index and worktree content changes invalidate it; a fresh token discards
 #   (e) a discard token minted for another project, or garbage, never
 #       authorizes this project
 #   (f) unpushed branches and stashes refuse as unlanded work
-#   (g) a repository with no remote refuses (all commits local-only) until
-#       explicit discard authority is presented
+#   (g) a repository with no remote refuses on every commit object, including
+#       tag-only history, until explicit discard authority is presented
 #   (h) live task metadata referencing the clone refuses structurally with no
 #       discard token offered; unrelated task metadata does not block
 #   (i) open backlog items tagged (repo: <name>) refuse; done items do not
@@ -32,6 +32,10 @@
 #   (q) an unregistered clone is still removed with a notice, with or without
 #       a registry file
 #   (r) the no-mistakes gate refusal fires before any mutation
+#   (s) independent state, data, and projects roots outside the active home
+#       refuse before inventory or deletion
+#   (t) mandatory Git inventory and post-prune inspection failures refuse closed
+#   (u) the prime directive permits discard only through the exact scoped token
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -39,6 +43,7 @@ set -u
 fm_git_identity
 
 REMOVE="$ROOT/bin/fm-project-remove.sh"
+REAL_GIT=$(command -v git)
 TMP_ROOT=$(fm_test_tmproot fm-project-remove-tests)
 
 make_home() {
@@ -64,6 +69,41 @@ run_remove() {
   FM_HOME="$home" "$REMOVE" "$@" 2>&1
 }
 
+make_failing_git_wrapper() {
+  local fakebin
+  fakebin=$(fm_fakebin "$1")
+  cat > "$fakebin/git" <<'SH'
+#!/usr/bin/env bash
+set -u
+mode=${FM_TEST_GIT_FAIL:-}
+args=" $*"
+case "$mode:$args" in
+  worktree-list:*" worktree list --porcelain") exit 86 ;;
+  stash:*" stash list --format=%H") exit 86 ;;
+  remote:*" remote") exit 86 ;;
+  branches:*" for-each-ref "*" refs/heads") exit 86 ;;
+  contains:*" branch -r --contains "*) exit 86 ;;
+  prune:*" worktree prune") exit 86 ;;
+esac
+if [ "$mode" = post-prune-list ]; then
+  case "$args" in
+    *" worktree prune")
+      "$FM_REAL_GIT" "$@"
+      code=$?
+      [ "$code" -ne 0 ] || : > "$FM_TEST_GIT_MARKER"
+      exit "$code"
+      ;;
+    *" worktree list --porcelain")
+      [ ! -e "$FM_TEST_GIT_MARKER" ] || exit 86
+      ;;
+  esac
+fi
+exec "$FM_REAL_GIT" "$@"
+SH
+  chmod +x "$fakebin/git"
+  printf '%s\n' "$fakebin"
+}
+
 extract_token() {
   printf '%s\n' "$1" | grep -o 'discard-unlanded:[A-Za-z0-9._-]*:[0-9a-f]\{1,\}' | head -1
 }
@@ -86,6 +126,7 @@ test_clean_removal_and_registry_consistency() {
   assert_grep '- beta - fixture project' "$home/data/projects.md" "unrelated registry line was disturbed"
   assert_grep '- gamma [direct-PR +yolo] - fixture project' "$home/data/projects.md" "unrelated mode-bracketed registry line was disturbed"
   assert_grep '# projects' "$home/data/projects.md" "registry header line was disturbed"
+  assert_absent "$ROOT/0" "post-prune verification wrote outside the managed clone"
   pass "clean removal deletes the clone then drops exactly its registry line"
 }
 
@@ -94,6 +135,9 @@ test_check_is_read_only_on_clean_clone() {
   make_home "$home"
   make_landed_clone "$home" alpha
   add_registry "$home" alpha
+  fm_write_meta "$home/state/unrelated.meta" \
+    "project=$home/projects/beta" \
+    "worktree=$home/worktrees/beta"
 
   out=$(run_remove "$home" alpha --check)
   code=$?
@@ -101,6 +145,7 @@ test_check_is_read_only_on_clean_clone() {
   assert_contains "$out" "clean: removal of alpha would proceed" "check did not report clean"
   assert_present "$home/projects/alpha" "check removed the clone"
   assert_grep '- alpha ' "$home/data/projects.md" "check mutated the registry"
+  assert_absent "$home/state/.guard-watcher-stale-banner" "--check mutated the guard's stale-watcher marker"
 
   out=$(run_remove "$home" alpha --check --confirm alpha)
   code=$?
@@ -114,6 +159,9 @@ test_confirm_required_and_exact() {
   make_home "$home"
   make_landed_clone "$home" alpha
   add_registry "$home" alpha
+  fm_write_meta "$home/state/unrelated.meta" \
+    "project=$home/projects/beta" \
+    "worktree=$home/worktrees/beta"
 
   out=$(run_remove "$home" alpha)
   code=$?
@@ -126,6 +174,7 @@ test_confirm_required_and_exact() {
   assert_contains "$out" "confirmation mismatch" "confirm mismatch not reported"
   assert_present "$home/projects/alpha" "mismatched confirm still removed the clone"
   assert_grep '- alpha ' "$home/data/projects.md" "mismatched confirm mutated the registry"
+  assert_absent "$home/state/.guard-watcher-stale-banner" "invalid confirmation ran the mutating guard"
   pass "removal demands an exact --confirm of the project name"
 }
 
@@ -134,8 +183,10 @@ test_dirty_refusal_and_scoped_discard_flow() {
   make_home "$home"
   make_landed_clone "$home" alpha
   add_registry "$home" alpha
-  echo extra > "$home/projects/alpha/untracked.txt"
+  mkdir -p "$home/projects/alpha/untracked"
+  echo extra > "$home/projects/alpha/untracked/item.txt"
   echo edit >> "$home/projects/alpha/README.md"
+  git -C "$home/projects/alpha" add README.md
 
   out=$(run_remove "$home" alpha --confirm alpha)
   code=$?
@@ -146,8 +197,9 @@ test_dirty_refusal_and_scoped_discard_flow() {
   token=$(extract_token "$out")
   [ -n "$token" ] || fail "could not extract discard token"
 
-  # The inventory changes; the old token must refuse.
-  echo more > "$home/projects/alpha/second.txt"
+  echo changed >> "$home/projects/alpha/README.md"
+  git -C "$home/projects/alpha" add README.md
+  echo changed > "$home/projects/alpha/untracked/item.txt"
   stale_token=$token
   out=$(run_remove "$home" alpha --confirm alpha --discard-authority "$stale_token")
   code=$?
@@ -167,7 +219,7 @@ test_dirty_refusal_and_scoped_discard_flow() {
   expect_code 0 "$code" "authorized discard removal"
   assert_absent "$home/projects/alpha" "authorized discard did not remove the clone"
   assert_no_grep '- alpha ' "$home/data/projects.md" "authorized discard left the registry line"
-  pass "discard authority is state-scoped: stale tokens refuse, the exact token discards"
+  pass "discard authority fingerprints current index, worktree, and untracked contents"
 }
 
 test_discard_authority_is_project_scoped() {
@@ -221,7 +273,7 @@ test_unpushed_branch_and_stash_refuse() {
 }
 
 test_no_remote_repository_refuses_then_discards() {
-  local home="$TMP_ROOT/local-only" out code token
+  local home="$TMP_ROOT/local-only" out code token fresh_token base
   make_home "$home"
   fm_git_init_commit "$home/projects/gamma"
   add_registry "$home" gamma
@@ -229,16 +281,35 @@ test_no_remote_repository_refuses_then_discards() {
   out=$(run_remove "$home" gamma --confirm gamma)
   code=$?
   expect_code 1 "$code" "local-only refusal"
-  assert_contains "$out" "exists only locally" "local-only commits not inventoried"
+  assert_contains "$out" "commit object(s) exist only locally" "local-only commits not inventoried"
   assert_present "$home/projects/gamma" "local-only refusal still removed the clone"
 
   token=$(extract_token "$out")
   [ -n "$token" ] || fail "no token for local-only inventory"
+  base=$(git -C "$home/projects/gamma" rev-parse HEAD)
+  echo tag-only > "$home/projects/gamma/tag-only.txt"
+  git -C "$home/projects/gamma" add tag-only.txt
+  git -C "$home/projects/gamma" commit -qm "tag-only history"
+  git -C "$home/projects/gamma" tag retained-only-by-tag
+  git -C "$home/projects/gamma" reset -q --hard "$base"
+
   out=$(run_remove "$home" gamma --confirm gamma --discard-authority "$token")
+  code=$?
+  expect_code 1 "$code" "stale local-only token refusal"
+  assert_contains "$out" "changed after the token was issued" "tag-only commit did not invalidate the token"
+  assert_present "$home/projects/gamma" "stale local-only token removed the clone"
+
+  out=$(run_remove "$home" gamma --check)
+  code=$?
+  expect_code 1 "$code" "fresh local-only inventory"
+  assert_contains "$out" "2 commit object(s)" "tag-only commit object was not inventoried"
+  fresh_token=$(extract_token "$out")
+  [ -n "$fresh_token" ] || fail "no fresh token for tag-only inventory"
+  out=$(run_remove "$home" gamma --confirm gamma --discard-authority "$fresh_token")
   code=$?
   expect_code 0 "$code" "authorized local-only removal"
   assert_absent "$home/projects/gamma" "authorized local-only removal left the clone"
-  pass "a repository with no remote refuses until explicit discard authority"
+  pass "a no-remote repository inventories branch, tag-only, and unreachable commits"
 }
 
 test_live_task_metadata_refuses_structurally() {
@@ -323,6 +394,7 @@ test_secondmate_registered_clone_refuses() {
   add_registry "$home" alpha
   cat > "$home/data/secondmates.md" <<EOF
 - design - Designs things (home: $TMP_ROOT/nonexistent-design-home; scope: design work; projects: alpha,beta; added 2026-07-21)
+- nested - Release work (with legacy context) (home: $home/projects/alpha/nonexistent-secondmate-home; scope: release work; projects: beta; added 2026-07-21)
 - other - Other domain (home: $TMP_ROOT/nonexistent-other-home; scope: other work; projects: beta; added 2026-07-21)
 EOF
 
@@ -330,15 +402,71 @@ EOF
   code=$?
   expect_code 1 "$code" "secondmate refusal"
   assert_contains "$out" "secondmate design registers a clone of alpha" "secondmate clone not inventoried"
+  assert_contains "$out" "secondmate nested home" "secondmate home after a parenthetical summary was not inventoried"
   assert_not_contains "$out" "secondmate other" "unrelated secondmate wrongly blocked removal"
   assert_present "$home/projects/alpha" "secondmate refusal still removed the clone"
 
-  grep -v '^- design ' "$home/data/secondmates.md" > "$home/data/secondmates.md.new"
+  grep -Ev '^- (design|nested) ' "$home/data/secondmates.md" > "$home/data/secondmates.md.new"
   mv "$home/data/secondmates.md.new" "$home/data/secondmates.md"
   out=$(run_remove "$home" alpha --confirm alpha)
   code=$?
   expect_code 0 "$code" "removal after secondmate deregistration"
   pass "a secondmate-registered clone blocks removal until deregistered"
+}
+
+test_active_home_roots_cannot_be_overridden() {
+  local home="$TMP_ROOT/active-home" other="$TMP_ROOT/other-home" out code spec variable path
+  make_home "$home"
+  make_home "$other"
+  make_landed_clone "$home" alpha
+  make_landed_clone "$other" alpha
+  add_registry "$home" alpha
+  add_registry "$other" alpha
+
+  for spec in \
+    "FM_STATE_OVERRIDE:$other/state" \
+    "FM_DATA_OVERRIDE:$other/data" \
+    "FM_PROJECTS_OVERRIDE:$other/projects"
+  do
+    variable=${spec%%:*}
+    path=${spec#*:}
+    out=$(env FM_HOME="$home" "$variable=$path" "$REMOVE" alpha --confirm alpha 2>&1)
+    code=$?
+    expect_code 1 "$code" "$variable active-home refusal"
+    assert_contains "$out" "outside the active FM_HOME" "$variable mismatch was not rejected"
+    assert_present "$home/projects/alpha" "$variable mismatch removed the active home's clone"
+    assert_present "$other/projects/alpha" "$variable mismatch removed the other home's clone"
+    assert_grep '- alpha ' "$home/data/projects.md" "$variable mismatch changed the active registry"
+    assert_grep '- alpha ' "$other/data/projects.md" "$variable mismatch changed the other registry"
+  done
+  pass "state, data, and projects roots remain contained by the active home"
+}
+
+test_git_inspection_failures_refuse_closed() {
+  local mode home fakebin marker out code
+  for mode in worktree-list stash remote branches contains prune post-prune-list; do
+    home="$TMP_ROOT/git-failure-$mode"
+    marker="$TMP_ROOT/git-failure-$mode.marker"
+    make_home "$home"
+    make_landed_clone "$home" alpha
+    add_registry "$home" alpha
+    fakebin=$(make_failing_git_wrapper "$TMP_ROOT/fake-$mode")
+
+    out=$(PATH="$fakebin:$PATH" FM_REAL_GIT="$REAL_GIT" FM_TEST_GIT_FAIL="$mode" \
+      FM_TEST_GIT_MARKER="$marker" FM_HOME="$home" "$REMOVE" alpha --confirm alpha 2>&1)
+    code=$?
+    expect_code 1 "$code" "$mode inspection failure"
+    assert_contains "$out" "refusing:" "$mode inspection failure was not reported"
+    assert_present "$home/projects/alpha" "$mode inspection failure removed the clone"
+    assert_grep '- alpha ' "$home/data/projects.md" "$mode inspection failure changed the registry"
+  done
+  pass "mandatory Git inspection and prune failures refuse closed"
+}
+
+test_instruction_contract_scopes_discard_authority() {
+  assert_grep "discarding unlanded work outside the guarded project-removal path's exact captain-authorized inventory token" \
+    "$ROOT/AGENTS.md" "prime directive does not recognize only the scoped project-removal token"
+  pass "prime directive permits only exact token-authorized project discard"
 }
 
 test_linked_worktree_refuses_then_prunes_stale() {
@@ -536,5 +664,8 @@ test_partial_failure_leaves_registry_untouched
 test_stale_registry_repair_is_idempotent_and_loud
 test_unregistered_clone_removed_with_notice
 test_gate_agent_is_refused
+test_active_home_roots_cannot_be_overridden
+test_git_inspection_failures_refuse_closed
+test_instruction_contract_scopes_discard_authority
 
 echo "all fm-project-remove tests passed"

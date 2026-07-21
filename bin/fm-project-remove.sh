@@ -39,7 +39,7 @@
 #   - dirty or untracked files
 #   - stash entries
 #   - branches (and a detached HEAD) not reachable from any remote-tracking
-#     branch, including every commit of a repository with no remote at all
+#     branch, including every commit object of a repository with no remote
 #
 # Discard authority is object- and state-scoped, never prose: a refusal whose
 # blockers are all discardable prints the exact token
@@ -80,7 +80,7 @@
 #   fm-project-remove.sh <name> --confirm <name> [--discard-authority <token>]
 #       Perform the removal transaction. --confirm must repeat the exact
 #       project name; a mismatch refuses before any mutation.
-set -eu
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -92,10 +92,6 @@ REG="$DATA/projects.md"
 
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
-# Fail closed before any fleet mutation: a no-mistakes gate agent must never
-# retire a project clone (see bin/fm-gate-refuse-lib.sh).
-fm_refuse_if_gate_agent
-"$FM_ROOT/bin/fm-guard.sh" || true
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -183,6 +179,43 @@ canonical_path() {
   fi
 }
 
+[ -z "${FM_STATE_OVERRIDE:-}" ] \
+  || die "refusing: FM_STATE_OVERRIDE cannot redirect state outside the active FM_HOME"
+[ -z "${FM_DATA_OVERRIDE:-}" ] \
+  || die "refusing: FM_DATA_OVERRIDE cannot redirect data outside the active FM_HOME"
+[ -z "${FM_PROJECTS_OVERRIDE:-}" ] \
+  || die "refusing: FM_PROJECTS_OVERRIDE cannot redirect projects outside the active FM_HOME"
+
+FM_HOME_PHYS=$(canonical_existing_dir "$FM_HOME") \
+  || die "cannot resolve active FM_HOME $FM_HOME"
+EXPECTED_STATE=$(canonical_path "$FM_HOME/state") \
+  || die "cannot resolve the active home's state directory"
+EXPECTED_DATA=$(canonical_path "$FM_HOME/data") \
+  || die "cannot resolve the active home's data directory"
+EXPECTED_PROJECTS=$(canonical_path "$FM_HOME/projects") \
+  || die "cannot resolve the active home's projects directory"
+STATE_PHYS=$(canonical_path "$STATE") \
+  || die "cannot resolve state directory $STATE"
+DATA_PHYS=$(canonical_path "$DATA") \
+  || die "cannot resolve data directory $DATA"
+PROJECTS_CONFIG_PHYS=$(canonical_path "$PROJECTS") \
+  || die "cannot resolve projects directory $PROJECTS"
+[ "$STATE_PHYS" = "$EXPECTED_STATE" ] \
+  || die "refusing: state directory $STATE is outside the active FM_HOME $FM_HOME"
+[ "$DATA_PHYS" = "$EXPECTED_DATA" ] \
+  || die "refusing: data directory $DATA is outside the active FM_HOME $FM_HOME"
+[ "$PROJECTS_CONFIG_PHYS" = "$EXPECTED_PROJECTS" ] \
+  || die "refusing: projects directory $PROJECTS is outside the active FM_HOME $FM_HOME"
+
+fm_refuse_if_gate_agent
+if [ "$MODE_CHECK" -eq 1 ]; then
+  FM_GUARD_READ_ONLY=1 "$FM_ROOT/bin/fm-guard.sh" || true
+else
+  "$FM_ROOT/bin/fm-guard.sh" || true
+fi
+
+export GIT_OPTIONAL_LOCKS=0
+
 fingerprint_hash() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 | awk '{print $1}'
@@ -193,8 +226,46 @@ fingerprint_hash() {
   fi
 }
 
+hash_inventory_entries() {
+  local repo=$1 rel full path_hash content_hash link_target nested_hash kind
+  while IFS= read -r -d '' rel; do
+    full="$repo/$rel"
+    path_hash=$(printf '%s' "$rel" | fingerprint_hash) || return 1
+    if [ -L "$full" ]; then
+      link_target=$(readlink "$full") || return 1
+      content_hash=$(printf '%s' "$link_target" | fingerprint_hash) || return 1
+      printf 'symlink:%s:%s\n' "$path_hash" "$content_hash"
+    elif [ -f "$full" ]; then
+      content_hash=$(fingerprint_hash < "$full") || return 1
+      kind=file
+      [ -x "$full" ] && kind=file+x
+      printf '%s:%s:%s\n' "$kind" "$path_hash" "$content_hash"
+    elif [ -d "$full" ]; then
+      git -C "$full" rev-parse --git-dir >/dev/null 2>&1 || return 1
+      nested_hash=$(repo_inventory_hash "$full") || return 1
+      printf 'repository:%s:%s\n' "$path_hash" "$nested_hash"
+    elif [ ! -e "$full" ]; then
+      printf 'missing:%s\n' "$path_hash"
+    else
+      return 1
+    fi
+  done
+}
+
+repo_inventory_hash() {
+  local repo=$1 index_hash files_hash
+  index_hash=$(git -C "$repo" ls-files --stage -z | fingerprint_hash) || return 1
+  files_hash=$(
+    git -C "$repo" ls-files --cached --others --exclude-standard -z \
+      | hash_inventory_entries "$repo" \
+      | fingerprint_hash
+  ) || return 1
+  printf 'index:%s\nfiles:%s\n' "$index_hash" "$files_hash" | fingerprint_hash
+}
+
 registry_has_entry() {
   [ -f "$REG" ] || return 1
+  [ -r "$REG" ] || die "cannot read project registry $REG"
   awk -v n="$NAME" '$1 == "-" && $2 == n { found = 1; exit } END { exit found ? 0 : 1 }' "$REG"
 }
 
@@ -251,7 +322,6 @@ TARGET=$(canonical_existing_dir "$CLONE") \
 [ "$TARGET" != / ] || die "refusing: resolved target is the filesystem root"
 
 FM_ROOT_PHYS=$(canonical_existing_dir "$FM_ROOT" || printf '%s' "$FM_ROOT")
-FM_HOME_PHYS=$(canonical_existing_dir "$FM_HOME" || printf '%s' "$FM_HOME")
 case "$FM_ROOT_PHYS/" in
   "$TARGET"/*) die "refusing: this firstmate checkout ($FM_ROOT_PHYS) is at or under the removal target" ;;
 esac
@@ -291,6 +361,16 @@ add_fprint() { FPRINT="${FPRINT}$1"$'\n'; }
 # structural blockers; registrations whose directories are gone are noted and
 # cleaned later (step 2) only through `git worktree prune`, after every check
 # has passed.
+worktree_inventory=$(git -C "$TARGET" worktree list --porcelain 2>/dev/null) \
+  || die "refusing: cannot inventory linked worktrees of $TARGET"
+primary_wt=$(printf '%s\n' "$worktree_inventory" | awk '/^worktree / { sub(/^worktree /, ""); print; exit }') \
+  || die "refusing: cannot parse linked worktrees of $TARGET"
+[ -n "$primary_wt" ] \
+  || die "refusing: linked-worktree inventory for $TARGET did not identify the primary worktree"
+primary_wt_phys=$(canonical_existing_dir "$primary_wt") \
+  || die "refusing: cannot resolve primary worktree $primary_wt"
+[ "$primary_wt_phys" = "$TARGET" ] \
+  || die "refusing: linked-worktree inventory identifies $primary_wt_phys as primary instead of $TARGET"
 first_wt=1
 while IFS= read -r line; do
   case "$line" in
@@ -307,23 +387,20 @@ while IFS= read -r line; do
       fi
       ;;
   esac
-done <<EOF_WT
-$(git -C "$TARGET" worktree list --porcelain 2>/dev/null || true)
-EOF_WT
+done <<< "$worktree_inventory"
 
-dirty=$(git -C "$TARGET" status --porcelain 2>/dev/null) \
+dirty=$(git -C "$TARGET" status --porcelain=v1 --untracked-files=all 2>/dev/null) \
   || die "refusing: cannot inventory the working tree of $TARGET"
 if [ -n "$dirty" ]; then
   dirty_count=$(printf '%s\n' "$dirty" | grep -c .)
   add_discardable "$dirty_count dirty or untracked path(s) (git status --porcelain)"
-  while IFS= read -r line; do
-    [ -n "$line" ] && add_fprint "dirty:$line"
-  done <<EOF_DIRTY
-$dirty
-EOF_DIRTY
+  dirty_inventory_hash=$(repo_inventory_hash "$TARGET") \
+    || die "refusing: cannot hash the index, worktree, and untracked contents of $TARGET"
+  add_fprint "dirty:$dirty_inventory_hash"
 fi
 
-stashes=$(git -C "$TARGET" stash list --format='%H' 2>/dev/null || true)
+stashes=$(git -C "$TARGET" stash list --format='%H' 2>/dev/null) \
+  || die "refusing: cannot inventory stashes of $TARGET"
 if [ -n "$stashes" ]; then
   stash_count=$(printf '%s\n' "$stashes" | grep -c .)
   add_discardable "$stash_count stash entry(ies)"
@@ -334,36 +411,60 @@ $stashes
 EOF_STASH
 fi
 
-remotes=$(git -C "$TARGET" remote 2>/dev/null || true)
+remotes=$(git -C "$TARGET" remote 2>/dev/null) \
+  || die "refusing: cannot inventory remotes of $TARGET"
 [ -n "$remotes" ] || add_fprint "remote:none"
 
 branch_landed() {
-  local sha=$1
+  local sha=$1 contains
   [ -n "$remotes" ] || return 1
-  [ -n "$(git -C "$TARGET" branch -r --contains "$sha" 2>/dev/null | head -1)" ]
+  contains=$(git -C "$TARGET" branch -r --contains "$sha" 2>/dev/null) \
+    || die "refusing: cannot inspect remote-tracking reachability for $sha"
+  [ -n "$contains" ]
 }
 
-while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  bname=${line% *}
-  bsha=${line##* }
-  if ! branch_landed "$bsha"; then
-    if [ -n "$remotes" ]; then
+if [ -n "$remotes" ]; then
+  branches=$(git -C "$TARGET" for-each-ref --format='%(refname:short) %(objectname)' refs/heads 2>/dev/null) \
+    || die "refusing: cannot inventory local branches of $TARGET"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    bname=${line% *}
+    bsha=${line##* }
+    if ! branch_landed "$bsha"; then
       add_discardable "branch $bname ($bsha) is not reachable from any remote-tracking branch"
-    else
-      add_discardable "branch $bname ($bsha) exists only locally (the repository has no remote)"
+      add_fprint "branch:$bname:$bsha"
     fi
-    add_fprint "branch:$bname:$bsha"
-  fi
-done <<EOF_BRANCH
-$(git -C "$TARGET" for-each-ref --format='%(refname:short) %(objectname)' refs/heads 2>/dev/null || true)
-EOF_BRANCH
+  done <<< "$branches"
 
-head_sha=$(git -C "$TARGET" rev-parse -q --verify HEAD 2>/dev/null || true)
-if [ -n "$head_sha" ] && ! git -C "$TARGET" symbolic-ref -q HEAD >/dev/null 2>&1; then
-  if ! branch_landed "$head_sha"; then
-    add_discardable "detached HEAD $head_sha is not reachable from any remote-tracking branch"
-    add_fprint "head:$head_sha"
+  if head_sha=$(git -C "$TARGET" rev-parse -q --verify HEAD 2>/dev/null); then
+    if git -C "$TARGET" symbolic-ref -q HEAD >/dev/null 2>&1; then
+      :
+    else
+      symbolic_status=$?
+      [ "$symbolic_status" -eq 1 ] \
+        || die "refusing: cannot determine whether HEAD is detached in $TARGET"
+      if ! branch_landed "$head_sha"; then
+        add_discardable "detached HEAD $head_sha is not reachable from any remote-tracking branch"
+        add_fprint "head:$head_sha"
+      fi
+    fi
+  else
+    head_status=$?
+    [ "$head_status" -eq 1 ] \
+      || die "refusing: cannot inspect HEAD of $TARGET"
+  fi
+else
+  commit_objects=$(
+    git -C "$TARGET" cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype)' 2>/dev/null \
+      | awk '$2 == "commit" { print $1 }' \
+      | LC_ALL=C sort -u
+  ) || die "refusing: cannot inventory commit objects of no-remote repository $TARGET"
+  if [ -n "$commit_objects" ]; then
+    commit_count=$(printf '%s\n' "$commit_objects" | grep -c .)
+    add_discardable "$commit_count commit object(s) exist only locally (the repository has no remote)"
+    while IFS= read -r commit_sha; do
+      [ -n "$commit_sha" ] && add_fprint "commit:$commit_sha"
+    done <<< "$commit_objects"
   fi
 fi
 
@@ -372,9 +473,12 @@ if [ -d "$STATE" ]; then
     [ -e "$meta" ] || continue
     task_id=$(basename "$meta" .meta)
     for field in project worktree home; do
-      val=$(grep "^$field=" "$meta" 2>/dev/null | head -1 | cut -d= -f2-) || true
+      [ -r "$meta" ] || die "refusing: cannot read live task metadata $meta"
+      val=$(awk -v key="$field=" 'index($0, key) == 1 { sub(key, ""); print; exit }' "$meta") \
+        || die "refusing: cannot inspect live task metadata $meta"
       [ -n "$val" ] || continue
-      vp=$(canonical_path "$val")
+      vp=$(canonical_path "$val") \
+        || die "refusing: cannot resolve $field=$val from $meta"
       case "$vp/" in
         "$TARGET"/*)
           add_structural "live task $task_id references the clone ($field=$val); tear it down through bin/fm-teardown.sh first"
@@ -386,13 +490,16 @@ if [ -d "$STATE" ]; then
 fi
 
 if [ -f "$DATA/backlog.md" ]; then
-  open_items=$(awk -v tag="(repo: $NAME)" '/^- \[ \]/ && index($0, tag) { print $4 }' "$DATA/backlog.md" | tr '\n' ' ')
+  [ -r "$DATA/backlog.md" ] || die "refusing: cannot read backlog $DATA/backlog.md"
+  open_items=$(awk -v tag="(repo: $NAME)" '/^- \[ \]/ && index($0, tag) { print $4 }' "$DATA/backlog.md" | tr '\n' ' ') \
+    || die "refusing: cannot inspect backlog $DATA/backlog.md"
   open_items=${open_items% }
   [ -z "$open_items" ] \
     || add_structural "open backlog item(s) tagged (repo: $NAME): $open_items; complete, re-home, or drop them in the backlog first"
 fi
 
 if [ -f "$DATA/secondmates.md" ]; then
+  [ -r "$DATA/secondmates.md" ] || die "refusing: cannot read secondmate registry $DATA/secondmates.md"
   while IFS= read -r line; do
     case "$line" in
       "- "*) : ;;
@@ -400,7 +507,8 @@ if [ -f "$DATA/secondmates.md" ]; then
     esac
     sid=${line#- }
     sid=${sid%% *}
-    csv=$(printf '%s\n' "$line" | sed -n 's/.*; projects: \([^;)]*\)[;)].*/\1/p')
+    csv=$(printf '%s\n' "$line" | sed -n 's/.*; projects:[[:space:]]*\([^;)]*\)[;)].*/\1/p') \
+      || die "refusing: cannot inspect secondmate registry $DATA/secondmates.md"
     if [ -n "$csv" ]; then
       rest="$csv,"
       while [ -n "$rest" ]; do
@@ -414,9 +522,11 @@ if [ -f "$DATA/secondmates.md" ]; then
         fi
       done
     fi
-    shome=$(printf '%s\n' "$line" | sed -n 's/^[^(]*(home: \([^;)]*\);.*/\1/p')
+    shome=$(printf '%s\n' "$line" | sed -n 's/.*(home:[[:space:]]*\([^;)]*\);.*/\1/p') \
+      || die "refusing: cannot inspect secondmate registry $DATA/secondmates.md"
     if [ -n "$shome" ]; then
-      sp=$(canonical_path "$shome")
+      sp=$(canonical_path "$shome") \
+        || die "refusing: cannot resolve secondmate home $shome"
       case "$sp/" in
         "$TARGET"/*) add_structural "secondmate $sid home $shome resolves under the clone; retire it through secondmate-provisioning first" ;;
       esac
@@ -490,9 +600,21 @@ fi
 # Step 2: prune stale worktree registrations through the supported owner tool,
 # then refuse if any linked registration survives (locked or unprunable) - the
 # clone and registry stay untouched in that case.
-git -C "$TARGET" worktree prune 2>/dev/null || true
-leftover_wt=$(git -C "$TARGET" worktree list --porcelain 2>/dev/null | awk 'NR > 1 && /^worktree / { sub(/^worktree /, ""); print }' | grep -c . || true)
-if [ "${leftover_wt:-0}" -gt 0 ]; then
+git -C "$TARGET" worktree prune 2>/dev/null \
+  || die "refusing: git worktree prune failed for $TARGET; clone and registry left untouched"
+post_prune_inventory=$(git -C "$TARGET" worktree list --porcelain 2>/dev/null) \
+  || die "refusing: cannot verify linked worktrees after git worktree prune; clone and registry left untouched"
+post_prune_primary=$(printf '%s\n' "$post_prune_inventory" | awk '/^worktree / { sub(/^worktree /, ""); print; exit }') \
+  || die "refusing: cannot parse post-prune linked-worktree inventory"
+[ -n "$post_prune_primary" ] \
+  || die "refusing: post-prune inventory did not identify the primary worktree; clone and registry left untouched"
+post_prune_primary_phys=$(canonical_existing_dir "$post_prune_primary") \
+  || die "refusing: cannot resolve post-prune primary worktree $post_prune_primary"
+[ "$post_prune_primary_phys" = "$TARGET" ] \
+  || die "refusing: post-prune inventory identifies $post_prune_primary_phys as primary instead of $TARGET"
+leftover_wt=$(printf '%s\n' "$post_prune_inventory" | awk '/^worktree / { count++ } END { print (count > 0 ? count - 1 : 0) }') \
+  || die "refusing: cannot count linked worktrees after git worktree prune"
+if [ "$leftover_wt" -gt 0 ]; then
   die "refusing: $leftover_wt linked worktree registration(s) survived git worktree prune (locked or unprunable); resolve them through git worktree tooling first - clone and registry left untouched"
 fi
 

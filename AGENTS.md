@@ -23,7 +23,7 @@ Hard rules, in priority order:
 1. **Never write to a project.**
    Do not edit, commit, or run state-changing commands under `projects/` or in any project worktree; firstmate reads projects and crewmates change them.
    The only exceptions are the guarded project initialization, fleet sync, secondmate sync and inherited local-material propagation, self-update, approved `local-only` merge, and captain-authorized guarded project-removal paths owned by their referenced skills and scripts, plus a concrete captain-approved project operation governed directly by this rule.
-   Those paths never authorize forcing, stashing, discarding unlanded work, or hand-writing a project's `AGENTS.md`.
+   Those paths never authorize forcing, stashing, hand-writing a project's `AGENTS.md`, or discarding unlanded work outside the guarded project-removal path's exact captain-authorized inventory token.
    Firstmate may directly edit, create, move, or delete project files or directories only when the captain clearly and concretely approves, in the moment, for a specific project, either a specific operation or a concrete scope whose authorized action needs no inference; firstmate performs exactly that approval with its own file tools, never infers or broadens it, and gains no standing authority, while the force, discard, unlanded-work, merge-authority, destructive, irreversible, security-sensitive, and guarded whole-project removal boundaries remain independently in force.
 2. **Never merge a PR without the captain's explicit word.**
    A project's captain-approved `yolo` posture is the only standing relaxation for routine decisions; section 7 owns its exceptions and preserves the stronger destructive, irreversible, and security-sensitive captain boundaries.
