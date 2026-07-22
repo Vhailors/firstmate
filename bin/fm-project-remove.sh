@@ -82,9 +82,11 @@
 #   4. deletion-boundary drain: after the rename no NEW handle can reach the
 #      payload through the canonical clone path, so the transaction refuses
 #      (restoring the clone) while any process still holds an open file,
-#      map, cwd, or root handle inside the quarantine, re-verifies the
-#      payload and external control inventory one final time after the drain,
-#      and only then removes the verified quarantine
+#      map, cwd, or root handle inside the quarantine. The scan uses /proc on
+#      Linux and lsof on other platforms, and an unavailable or incomplete
+#      scan refuses and restores the clone. The transaction then re-verifies
+#      the payload and external control inventory one final time after the
+#      drain, and only then removes the verified quarantine
 #   5. both the original clone path and quarantine are verified absent; an
 #      incomplete removal stops LOUDLY here and leaves the registry untouched,
 #      so the registry never claims a clone is gone while bytes remain
@@ -1395,7 +1397,7 @@ rmdir "$QUARANTINE_PARENT" \
 QUARANTINE=
 QUARANTINE_PARENT=
 
-# Step 5: registry line drop, only now that clone absence is confirmed.
+# Step 6: registry line drop, only now that clone absence is confirmed.
 if [ "$reg_present" -eq 1 ]; then
   verify_project_lock
   remove_registry_line
