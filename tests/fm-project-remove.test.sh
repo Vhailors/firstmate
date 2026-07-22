@@ -47,6 +47,18 @@
 #   (aa) post-prune and post-rename writes refuse without deleting raced bytes
 #   (ab) registry rewrites use restrictive unpredictable same-directory temps
 #   (ac) discard authority uses full SHA-256 and has no weak fallback
+#   (ad) an interrupted quarantined deletion refuses in every mode and is
+#        never misclassified as ordinary stale-registry repair
+#   (ae) entries merely named .git that git cannot validate stay ordinary
+#        discardable payload instead of blocking inspection or masquerading
+#        as nested repositories
+#   (af) a nested repository whose gitdir store resolves outside the clone
+#        remains discardable exact-authority inventory, never an
+#        unconditional structural blocker
+#   (ag) a process holding an open handle into the clone refuses at the
+#        deletion boundary and the clone is restored intact
+#   (ah) dotted project names are valid, work end to end, and are documented
+#        as valid
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -830,6 +842,181 @@ test_registry_rewrite_uses_secure_temp() {
   pass "registry rewrites reject symlink temps and clean restrictive same-directory files"
 }
 
+test_interrupted_quarantine_never_stale_repairs() {
+  local home="$TMP_ROOT/interrupted" q out code
+  make_home "$home"
+  add_registry "$home" alpha
+  add_registry "$home" beta
+  q="$home/projects/.fm-project-remove-alpha.crashed"
+  mkdir -p "$q/clone"
+  printf 'unlanded bytes\n' > "$q/clone/precious.txt"
+
+  out=$(run_remove "$home" alpha --check)
+  code=$?
+  expect_code 1 "$code" "check with interrupted quarantine"
+  assert_contains "$out" "NOT a stale registry" "check misclassified an interrupted removal as a stale registry"
+  assert_contains "$out" "mv '$q/clone'" "check did not explain the restore step"
+
+  out=$(run_remove "$home" alpha --confirm alpha)
+  code=$?
+  expect_code 1 "$code" "repair with interrupted quarantine"
+  assert_contains "$out" "NOT a stale registry" "repair did not refuse the interrupted quarantine"
+  assert_grep '- alpha ' "$home/data/projects.md" "interrupted quarantine still repaired the registry"
+  assert_present "$q/clone/precious.txt" "interrupted-removal bytes were touched"
+
+  # A present clone next to a leftover quarantine is equally ambiguous.
+  make_landed_clone "$home" alpha
+  out=$(run_remove "$home" alpha --confirm alpha)
+  code=$?
+  expect_code 1 "$code" "removal with leftover quarantine"
+  assert_contains "$out" "NOT a stale registry" "removal ignored the leftover quarantine"
+  assert_present "$home/projects/alpha" "removal proceeded despite the leftover quarantine"
+  assert_present "$q/clone/precious.txt" "leftover quarantine bytes were touched during refusal"
+
+  # Once the quarantine is resolved by hand, the ordinary paths work again.
+  rm -rf "$q"
+  out=$(run_remove "$home" alpha --confirm alpha)
+  code=$?
+  expect_code 0 "$code" "removal after quarantine resolution"
+  assert_absent "$home/projects/alpha" "clone survived after quarantine resolution"
+
+  # Empty residue (a crash between quarantine creation and the rename)
+  # refuses with its own message and never repairs the registry.
+  mkdir "$home/projects/.fm-project-remove-beta.residue"
+  out=$(run_remove "$home" beta --confirm beta)
+  code=$?
+  expect_code 1 "$code" "repair with empty quarantine residue"
+  assert_contains "$out" "empty residue" "empty quarantine residue was not distinguished"
+  assert_grep '- beta ' "$home/data/projects.md" "empty residue still repaired the registry"
+  rmdir "$home/projects/.fm-project-remove-beta.residue"
+  out=$(run_remove "$home" beta --confirm beta)
+  code=$?
+  expect_code 0 "$code" "stale repair after residue cleanup"
+  assert_contains "$out" "repaired stale registry" "stale repair did not run after residue cleanup"
+  pass "an interrupted quarantine refuses loudly and never becomes a stale-registry repair"
+}
+
+test_invalid_git_named_entries_stay_discardable() {
+  local home="$TMP_ROOT/fake-git-markers" cache out code token fresh_token
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  printf '.cache/\n' > "$home/projects/alpha/.git/info/exclude"
+  cache="$home/projects/alpha/.cache"
+  mkdir -p "$cache/empty-marker/.git" "$cache/file-marker"
+  printf 'not a gitfile\n' > "$cache/file-marker/.git"
+  mkfifo "$cache/.git"
+  ln -s /nonexistent-target "$cache/dangling.git-link"
+  mkdir -p "$cache/link-marker"
+  ln -s /nonexistent-target "$cache/link-marker/.git"
+
+  out=$(run_remove "$home" alpha --check)
+  code=$?
+  expect_code 1 "$code" "fake marker inventory"
+  assert_not_contains "$out" "cannot completely inventory nested repository state" "fake .git entries blocked the inventory"
+  assert_not_contains "$out" "nested repository worktree" "a fake .git entry was classified as a nested repository"
+  token=$(extract_token "$out")
+  [ -n "$token" ] || fail "fake .git payload did not mint a discard token"
+
+  printf 'cache contents changed\n' > "$cache/file-marker/.git"
+  out=$(run_remove "$home" alpha --confirm alpha --discard-authority "$token")
+  code=$?
+  expect_code 1 "$code" "stale token over fake-marker change"
+  assert_contains "$out" "does not match the CURRENT" "changed fake-marker payload did not invalidate authority"
+  assert_present "$home/projects/alpha" "stale fake-marker authority removed the clone"
+
+  out=$(run_remove "$home" alpha --check)
+  fresh_token=$(extract_token "$out")
+  [ -n "$fresh_token" ] || fail "changed fake-marker payload did not produce a fresh token"
+  out=$(run_remove "$home" alpha --confirm alpha --discard-authority "$fresh_token")
+  code=$?
+  expect_code 0 "$code" "authorized fake-marker removal"
+  assert_absent "$home/projects/alpha" "authorized fake-marker removal left the clone"
+  pass "entries merely named .git stay ordinary discardable payload"
+}
+
+test_external_nested_repository_is_discardable_inventory() {
+  local home="$TMP_ROOT/external-nested" out code token fresh_token
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  fm_git_init_commit "$home/external-parent"
+  git -C "$home/external-parent" worktree add --quiet --detach "$home/projects/alpha/vendor-checkout"
+
+  out=$(run_remove "$home" alpha --check)
+  code=$?
+  expect_code 1 "$code" "external nested inventory"
+  assert_contains "$out" "nested repository worktree" "external nested checkout was not inventoried as discardable"
+  assert_contains "$out" "resolve outside the clone" "external gitdir note is missing"
+  assert_not_contains "$out" "structural blockers" "external nested gitdir was promoted to a structural blocker"
+  token=$(extract_token "$out")
+  [ -n "$token" ] || fail "external nested inventory did not mint a discard token"
+
+  printf 'external work\n' > "$home/external-parent/external.txt"
+  git -C "$home/external-parent" add external.txt
+  git -C "$home/external-parent" commit -qm "external state change"
+  out=$(run_remove "$home" alpha --confirm alpha --discard-authority "$token")
+  code=$?
+  expect_code 1 "$code" "stale token over external state change"
+  assert_contains "$out" "does not match the CURRENT" "external repository state change did not invalidate authority"
+  assert_present "$home/projects/alpha" "stale external-state authority removed the clone"
+
+  out=$(run_remove "$home" alpha --check)
+  fresh_token=$(extract_token "$out")
+  [ -n "$fresh_token" ] || fail "changed external state did not produce a fresh token"
+  out=$(run_remove "$home" alpha --confirm alpha --discard-authority "$fresh_token")
+  code=$?
+  expect_code 0 "$code" "authorized removal with external nested checkout"
+  assert_absent "$home/projects/alpha" "authorized removal left the clone"
+  assert_present "$home/external-parent/.git" "the external gitdir store was deleted"
+  assert_present "$home/external-parent/external.txt" "external repository content was touched"
+  pass "an external-gitdir nested repository is exact-authority inventory, never structural"
+}
+
+test_open_handle_refuses_at_deletion_boundary() {
+  local home="$TMP_ROOT/open-handle" out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+
+  exec 9< "$home/projects/alpha/README.md"
+  out=$(run_remove "$home" alpha --confirm alpha)
+  code=$?
+  exec 9<&-
+  expect_code 1 "$code" "open handle refusal"
+  assert_contains "$out" "open handle" "a held file handle was not detected at the deletion boundary"
+  assert_contains "$out" "restored to" "the clone was not restored after the open-handle refusal"
+  assert_present "$home/projects/alpha/README.md" "the open-handle refusal lost the clone"
+  assert_grep '- alpha ' "$home/data/projects.md" "the open-handle refusal changed the registry"
+
+  out=$(run_remove "$home" alpha --confirm alpha)
+  code=$?
+  expect_code 0 "$code" "removal after handle release"
+  assert_absent "$home/projects/alpha" "clone survived after the handle was released"
+  pass "a live open handle blocks deletion and restores the clone intact"
+}
+
+test_dotted_project_names_are_valid() {
+  local home="$TMP_ROOT/dotted" out code
+  make_home "$home"
+  make_landed_clone "$home" my.project
+  add_registry "$home" my.project
+
+  out=$(run_remove "$home" my.project --check)
+  code=$?
+  expect_code 0 "$code" "dotted name check"
+  assert_contains "$out" "clean: removal of my.project" "dotted name was not accepted by --check"
+
+  out=$(run_remove "$home" my.project --confirm my.project)
+  code=$?
+  expect_code 0 "$code" "dotted name removal"
+  assert_absent "$home/projects/my.project" "dotted-name clone survived removal"
+  assert_no_grep '- my.project ' "$home/data/projects.md" "dotted-name registry line survived"
+  assert_no_grep 'names containing /, ., or .. are rejected' "$REMOVE" \
+    "the helper header still documents dotted names as invalid"
+  pass "dotted project names are valid end to end and documented as such"
+}
+
 test_instruction_contract_scopes_discard_authority() {
   assert_grep "discarding unlanded work outside the guarded project-removal path's exact captain-authorized inventory token" \
     "$ROOT/AGENTS.md" "prime directive does not recognize only the scoped project-removal token"
@@ -1050,6 +1237,11 @@ test_transaction_lock_and_final_inventory_recheck
 test_git_inspection_failures_refuse_closed
 test_sha256_is_required_and_full_length
 test_registry_rewrite_uses_secure_temp
+test_interrupted_quarantine_never_stale_repairs
+test_invalid_git_named_entries_stay_discardable
+test_external_nested_repository_is_discardable_inventory
+test_open_handle_refuses_at_deletion_boundary
+test_dotted_project_names_are_valid
 test_instruction_contract_scopes_discard_authority
 test_scripts_catalog_allows_optional_registry
 

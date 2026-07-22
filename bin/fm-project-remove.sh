@@ -10,9 +10,11 @@
 #
 # Resolution (each of these refuses before any mutation):
 #   - The target is a bare project NAME ([A-Za-z0-9._-]+, no leading dash),
-#     never a path: names containing /, ., or .. are rejected, so the
-#     transaction can only ever reach $FM_HOME/projects/<name> in the ACTIVE
-#     home - another home's clone is unreachable by construction.
+#     never a path: the exact names . and .., any name containing /, and any
+#     character outside that set are rejected, while interior dots as in
+#     "my.project" are valid, so the transaction can only ever reach
+#     $FM_HOME/projects/<name> in the ACTIVE home - another home's clone is
+#     unreachable by construction.
 #   - The projects directory and the clone must be real directories, not
 #     symlinks, and the clone's physical path must resolve to exactly
 #     <projects-phys>/<name>; a symlinked or relocated clone refuses.
@@ -37,8 +39,17 @@
 #     whose directories are already gone are cleaned only through
 #     `git worktree prune` (the supported owner tool), never by raw deletion
 # DISCARDABLE blockers name work content the captain may explicitly discard:
-#   - dirty, untracked, or ignored files and directories, including nested
-#     repository metadata and object state
+#   - dirty, untracked, or ignored files and directories
+#   - nested repositories: only a marker git itself validates (via
+#     `git rev-parse --resolve-git-dir`) counts as one; an entry merely NAMED
+#     .git that git cannot resolve (a cache file, an empty or corrupt
+#     directory, a fifo, a dangling symlink) stays ordinary discardable
+#     payload fingerprinted by the tree inventory. A validated nested
+#     repository's worktree, ref, stash, and object state is exact-authority
+#     inventory even when the outer tree is clean, INCLUDING one whose gitdir
+#     store resolves outside the clone - removal deletes only the in-clone
+#     checkout and leaves the external store untouched, with a stale
+#     registration to clean through Git tooling afterwards
 #   - stash entries
 #   - branches (and a detached HEAD) not reachable from any remote-tracking
 #     branch, including every commit object of a repository with no remote
@@ -60,20 +71,31 @@
 #   2. `git worktree prune` inside the clone (supported owner tool, safe:
 #      it drops only registrations whose directories are already gone)
 #   3. the clone is atomically renamed into a restrictive same-filesystem
-#      quarantine, the quarantined payload and external control inventory are
-#      reverified, and only that verified quarantine is removed
-#   4. both the original clone path and quarantine are verified absent; an
+#      quarantine and the quarantined payload and external control inventory
+#      are reverified
+#   4. deletion-boundary drain: after the rename no NEW handle can reach the
+#      payload through the canonical clone path, so the transaction refuses
+#      (restoring the clone) while any process still holds an open file,
+#      map, cwd, or root handle inside the quarantine, re-verifies the
+#      payload one final time after the drain, and only then removes the
+#      verified quarantine
+#   5. both the original clone path and quarantine are verified absent; an
 #      incomplete removal stops LOUDLY here and leaves the registry untouched,
 #      so the registry never claims a clone is gone while bytes remain
-#   5. only then is the data/projects.md line for exactly <name> dropped, via
+#   6. only then is the data/projects.md line for exactly <name> dropped, via
 #      an atomic rewrite that leaves every other line byte-identical
 # The transaction never stashes, never resets, never force-deletes branches,
 # and never removes anything outside the verified clone path.
 #
 # Idempotent stale-registry repair: when data/projects.md still lists <name>
-# but no clone exists, the same command performs only steps 4-5 and reports the
-# repair. When neither a clone nor a registry entry exists, it fails loudly
-# instead of reporting success for a possible typo.
+# but no clone exists, the same command performs only steps 5-6 and reports the
+# repair. A leftover removal quarantine for <name> under projects/ means an
+# earlier transaction was interrupted, NOT that the registry is stale: every
+# mode refuses loudly before classifying the clone as absent, names the
+# quarantine, and explains the restore step, so preserved bytes are never
+# orphaned by a registry repair. When neither a clone, nor a registry entry,
+# nor a leftover quarantine exists, it fails loudly instead of reporting
+# success for a possible typo.
 #
 # bin/fm-teardown.sh remains the single owner of the task-worktree landed-work
 # test; this script owns only the clone-retirement risk inventory above.
@@ -394,10 +416,28 @@ root_git_state_hash() {
 }
 
 nested_git_marker_records() {
-  local repo=$1 marker worktree gitdir common gitdir_phys common_phys scope path_hash gitdir_id common_id state_hash gitdir_hash common_hash modules modules_hash marker_records
+  local repo=$1 marker marker_first_line worktree gitdir common gitdir_phys common_phys scope path_hash gitdir_id common_id state_hash gitdir_hash common_hash modules modules_hash marker_records
   marker_records=$(
     find "$repo" -path "$repo/.git" -prune -o -mindepth 2 -name .git -print0 \
       | while IFS= read -r -d '' marker; do
+        # Only a marker git itself validates is a nested repository; an entry
+        # merely NAMED .git (cache file, empty or corrupt directory, fifo,
+        # dangling symlink) stays ordinary discardable payload and is already
+        # fingerprinted by the tree inventory. Validation never opens
+        # non-regular files, so a fifo cannot stall the inventory.
+        if [ -d "$marker" ]; then
+          git rev-parse --resolve-git-dir "$marker" >/dev/null 2>&1 || continue
+        elif [ -f "$marker" ] && [ ! -L "$marker" ]; then
+          marker_first_line=
+          IFS= read -r marker_first_line < "$marker" || true
+          case "$marker_first_line" in
+            "gitdir:"*) : ;;
+            *) continue ;;
+          esac
+          git rev-parse --resolve-git-dir "$marker" >/dev/null 2>&1 || continue
+        else
+          continue
+        fi
         worktree=${marker%/.git}
         gitdir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) || return 1
         common=$(git -C "$worktree" rev-parse --git-common-dir 2>/dev/null) || return 1
@@ -530,6 +570,31 @@ quarantine_boundary_hash() {
   deletion_hash=$(deletion_boundary_hash "$repo") || return 1
   worktree_hash=$(normalized_worktree_state_hash "$repo") || return 1
   printf 'deletion:%s\nworktrees:%s\n' "$deletion_hash" "$worktree_hash" | fingerprint_hash
+}
+
+# Deletion-boundary handle scan: after the quarantine rename no NEW handle can
+# be opened through the canonical clone path, so the only writers that could
+# still mutate the payload are processes that already hold an open file, map,
+# cwd, or root handle inside it. Prints one line per held handle (empty output
+# means drained); returns 2 when no scan mechanism exists on this platform, in
+# which case the caller must refuse.
+quarantine_open_handles() {
+  local dir=$1 pid_dir proc_roots=()
+  if [ "$(uname)" = Linux ] && [ -d /proc ]; then
+    for pid_dir in /proc/[0-9]*; do
+      proc_roots+=("$pid_dir/fd" "$pid_dir/map_files" "$pid_dir/cwd" "$pid_dir/root" "$pid_dir/exe")
+    done
+    [ "${#proc_roots[@]}" -gt 0 ] || return 2
+    # Handles of other users' processes are unreadable and invisible to any
+    # same-user scan mechanism; suppressed errors only ever hide those.
+    find "${proc_roots[@]}" -maxdepth 1 -lname "$dir*" -print 2>/dev/null || true
+    return 0
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof +D "$dir" 2>/dev/null | awk 'NR > 1 { print $2, $4 }' || true
+    return 0
+  fi
+  return 2
 }
 
 validate_discard_authority() {
@@ -691,6 +756,32 @@ fi
 reg_present=0
 registry_has_entry && reg_present=1
 
+# An earlier removal of this project interrupted between quarantine and
+# deletion leaves preserved clone bytes under projects/.fm-project-remove-
+# <name>.*; that is recoverable work, never a stale registry. Refuse in every
+# mode before any branch below can classify the clone as absent.
+if [ -d "$PROJECTS" ]; then
+  leftover_quarantines=$(
+    find "$PROJECTS" -mindepth 1 -maxdepth 1 -name ".fm-project-remove-$NAME.*" -print \
+      | LC_ALL=C sort
+  ) || die "refusing: cannot scan $PROJECTS for interrupted-removal quarantines of '$NAME'"
+  if [ -n "$leftover_quarantines" ]; then
+    leftover_quarantine=${leftover_quarantines%%$'\n'*}
+    if [ -d "$leftover_quarantine" ] && [ ! -L "$leftover_quarantine" ]; then
+      leftover_probe=$(find "$leftover_quarantine" -mindepth 1 -print -quit 2>/dev/null || printf 'unreadable')
+    else
+      leftover_probe=non-directory
+    fi
+    if [ -z "$leftover_probe" ]; then
+      die "refusing: leftover removal quarantine $leftover_quarantine from an interrupted removal of '$NAME' is empty residue; inspect and remove that directory, then re-run"
+    fi
+    if [ -e "$leftover_quarantine/clone" ] || [ -L "$leftover_quarantine/clone" ]; then
+      die "refusing: an earlier removal of '$NAME' was interrupted and quarantined clone bytes remain at $leftover_quarantine; this is NOT a stale registry and no repair will run - inspect the quarantine and, when the content should come back, restore it with: mv '$leftover_quarantine/clone' '$CLONE' (then remove the empty quarantine directory and re-run)"
+    fi
+    die "refusing: an earlier removal of '$NAME' left unexpected content in quarantine $leftover_quarantine; this is NOT a stale registry - inspect and resolve it by hand, then re-run"
+  fi
+fi
+
 if [ "$clone_present" -eq 0 ]; then
   if [ "$reg_present" -eq 0 ]; then
     die "nothing to remove: project '$NAME' has no clone under $PROJECTS and no data/projects.md entry in this home; check the name and the active home"
@@ -806,7 +897,7 @@ if [ -n "$nested_git_records" ]; then
   nested_modules_count=$(printf '%s\n' "$nested_git_records" | awk '/^modules:/ { count++ } END { print count + 0 }')
   nested_external_count=$(printf '%s\n' "$nested_git_records" | awk -F: '$1 == "repo" && $3 == "external" { count++ } $1 == "modules" && $2 == "external" { count++ } END { print count + 0 }')
   [ "$nested_external_count" -eq 0 ] \
-    || add_structural "$nested_external_count nested repository gitdir(s) resolve outside the clone; detach them through Git tooling before removal"
+    || add_info "$nested_external_count nested repository gitdir store(s) resolve outside the clone; removal deletes only the in-clone checkout(s) and leaves each external store untouched, with a stale registration to clean through Git tooling afterwards"
   add_discardable "$nested_git_count nested repository worktree(s) and $nested_modules_count submodule gitdir store(s)"
   nested_git_inventory_hash=$(printf '%s\n' "$nested_git_records" | LC_ALL=C sort | fingerprint_hash) \
     || die "refusing: cannot fingerprint nested repository state in $TARGET"
@@ -1086,6 +1177,22 @@ if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
   QUARANTINE_PRESERVE=1
   die "refusing: $TARGET was recreated after quarantine; registry left untouched and quarantined bytes preserved at $QUARANTINE"
 fi
+
+# Deletion-boundary drain: refuse while any process still holds a handle into
+# the payload, then re-verify the payload after the drain so nothing written
+# through a since-closed handle is deleted under stale authority.
+if ! deletion_open_handles=$(quarantine_open_handles "$QUARANTINE"); then
+  refuse_quarantined_change "refusing: no supported way to verify that every process has released the clone at the deletion boundary on this platform"
+fi
+if [ -n "$deletion_open_handles" ]; then
+  deletion_open_count=$(printf '%s\n' "$deletion_open_handles" | grep -c .)
+  refuse_quarantined_change "refusing: $deletion_open_count open handle(s) into the clone are still held by live processes at the deletion boundary"
+fi
+final_deletion_snapshot=$(quarantine_boundary_hash "$QUARANTINE") \
+  || refuse_quarantined_change "refusing: cannot re-verify the quarantined payload at the deletion boundary"
+[ "$final_deletion_snapshot" = "$pre_quarantine_snapshot" ] \
+  || refuse_quarantined_change "refusing: the quarantined payload changed at the deletion boundary"
+verify_project_lock
 
 rm_err=$(rm -rf -- "$QUARANTINE" 2>&1 >/dev/null) || true
 if [ -e "$QUARANTINE" ] || [ -L "$QUARANTINE" ]; then
