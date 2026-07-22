@@ -53,9 +53,9 @@
 #     checkout and leaves the external store untouched, with a stale
 #     registration to clean through Git tooling afterwards
 #   - stash entries
-#   - every commit object not reachable from any remote-tracking ref, including
-#     commits retained only by a local tag, note, reflog, or dangling object,
-#     plus every local tag, note, and other non-branch ref
+#   - every Git object not reachable from any remote-tracking ref, including
+#     commit, tree, blob, and tag objects retained only by a local ref, reflog,
+#     or dangling object, plus every local tag, note, and other non-branch ref
 #
 # Discard authority is object- and state-scoped, never prose: a refusal whose
 # blockers are all discardable prints the exact token
@@ -81,8 +81,8 @@
 #      payload through the canonical clone path, so the transaction refuses
 #      (restoring the clone) while any process still holds an open file,
 #      map, cwd, or root handle inside the quarantine, re-verifies the
-#      payload one final time after the drain, and only then removes the
-#      verified quarantine
+#      payload and external control inventory one final time after the drain,
+#      and only then removes the verified quarantine
 #   5. both the original clone path and quarantine are verified absent; an
 #      incomplete removal stops LOUDLY here and leaves the registry untouched,
 #      so the registry never claims a clone is gone while bytes remain
@@ -631,17 +631,33 @@ quarantine_boundary_hash() {
 # means drained); returns 2 when no scan mechanism exists on this platform, in
 # which case the caller must refuse.
 quarantine_open_handles() {
-  local dir=$1 pid_dir proc_roots=() canary output status
+  local dir=$1 pid_dir proc_roots=() canary scan_canary output status line scan_verified
   if [ "$(uname)" = Linux ]; then
     [ -d /proc ] || return 2
     [ -r "/proc/$$/fd" ] && [ -x "/proc/$$/fd" ] || return 2
     canary=$(find "/proc/$$/fd" -mindepth 1 -maxdepth 1 -print 2>/dev/null) || return 2
     [ -n "$canary" ] || return 2
+    scan_canary="/proc/$$/status"
+    [ -r "$scan_canary" ] || return 2
     for pid_dir in /proc/[0-9]*; do
       proc_roots+=("$pid_dir/fd" "$pid_dir/map_files" "$pid_dir/cwd" "$pid_dir/root" "$pid_dir/exe")
     done
     [ "${#proc_roots[@]}" -gt 0 ] || return 2
-    find "${proc_roots[@]}" -maxdepth 1 \( -lname "$dir" -o -lname "$dir/*" \) -print 2>/dev/null || true
+    output=
+    if output=$(find "${proc_roots[@]}" "$scan_canary" -maxdepth 1 \
+      \( -path "$scan_canary" -print -o \( -lname "$dir" -o -lname "$dir/*" \) -print \) \
+      2>/dev/null); then
+      :
+    fi
+    scan_verified=0
+    while IFS= read -r line; do
+      if [ "$line" = "$scan_canary" ]; then
+        scan_verified=1
+      elif [ -n "$line" ]; then
+        printf '%s\n' "$line"
+      fi
+    done <<< "$output"
+    [ "$scan_verified" -eq 1 ] || return 2
     return 0
   fi
   command -v lsof >/dev/null 2>&1 || return 2
@@ -1009,31 +1025,46 @@ remotes=$(git -C "$TARGET" remote 2>/dev/null) \
   || die "refusing: cannot inventory remotes of $TARGET"
 [ -n "$remotes" ] || add_fprint "remote:none"
 
-commit_objects=$(
+git_objects=$(
   git -C "$TARGET" cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype)' 2>/dev/null \
-    | awk '$2 == "commit" { print $1 }' \
-    | LC_ALL=C sort -u
-) || die "refusing: cannot inventory commit objects of $TARGET"
+    | LC_ALL=C sort -k1,1 -u
+) || die "refusing: cannot inventory Git objects of $TARGET"
 if [ -n "$remotes" ]; then
-  remote_commits=$(git -C "$TARGET" rev-list --remotes 2>/dev/null | LC_ALL=C sort -u) \
-    || die "refusing: cannot inspect remote-tracking commit reachability in $TARGET"
-  unlanded_commits=$(LC_ALL=C comm -23 \
-    <(printf '%s\n' "$commit_objects") \
-    <(printf '%s' "$remote_commits")) \
-    || die "refusing: cannot compare local and remote-tracking commit inventories"
+  remote_objects=$(git -C "$TARGET" rev-list --objects --remotes 2>/dev/null \
+    | awk '{ print $1 }' \
+    | LC_ALL=C sort -u) \
+    || die "refusing: cannot inspect remote-tracking object reachability in $TARGET"
+  unlanded_objects=$(LC_ALL=C join -v 1 -1 1 -2 1 \
+    <(printf '%s\n' "$git_objects") \
+    <(printf '%s' "$remote_objects")) \
+    || die "refusing: cannot compare local and remote-tracking object inventories"
 else
-  unlanded_commits=$commit_objects
+  unlanded_objects=$git_objects
 fi
-if [ -n "$unlanded_commits" ]; then
-  commit_count=$(printf '%s\n' "$unlanded_commits" | grep -c .)
+commit_count=0
+noncommit_count=0
+if [ -n "$unlanded_objects" ]; then
+  commit_count=$(printf '%s\n' "$unlanded_objects" | awk '$2 == "commit" { count++ } END { print count + 0 }')
+  noncommit_count=$(printf '%s\n' "$unlanded_objects" | awk '$2 != "commit" { count++ } END { print count + 0 }')
+fi
+if [ "$commit_count" -gt 0 ]; then
   if [ -n "$remotes" ]; then
     add_discardable "$commit_count commit object(s) are not reachable from any remote-tracking ref"
   else
     add_discardable "$commit_count commit object(s) exist only locally (the repository has no remote)"
   fi
-  while IFS= read -r commit_sha; do
-    [ -n "$commit_sha" ] && add_fprint "commit:$commit_sha"
-  done <<< "$unlanded_commits"
+fi
+if [ "$noncommit_count" -gt 0 ]; then
+  if [ -n "$remotes" ]; then
+    add_discardable "$noncommit_count non-commit Git object(s) are not reachable from any remote-tracking ref"
+  else
+    add_discardable "$noncommit_count non-commit Git object(s) exist only locally (the repository has no remote)"
+  fi
+fi
+if [ -n "$unlanded_objects" ]; then
+  while IFS=' ' read -r object_sha object_type; do
+    [ -n "$object_sha" ] && [ -n "$object_type" ] && add_fprint "object:$object_type:$object_sha"
+  done <<< "$unlanded_objects"
 fi
 
 local_refs=$(git -C "$TARGET" for-each-ref --format='%(refname) %(objectname)' 2>/dev/null) \
@@ -1283,6 +1314,10 @@ final_nested_mounts=$(nested_mount_records "$QUARANTINE") \
   || refuse_quarantined_change "refusing: cannot verify nested mountpoints immediately before deletion"
 [ -z "$final_nested_mounts" ] \
   || refuse_quarantined_change "refusing: a nested mountpoint exists at the deletion boundary: ${final_nested_mounts%%$'\n'*}"
+final_control_snapshot=$(control_inventory_hash) \
+  || refuse_quarantined_change "refusing: cannot re-verify external control inventory immediately before deletion"
+[ "$final_control_snapshot" = "$authorized_control_snapshot" ] \
+  || refuse_quarantined_change "refusing: external control inventory changed immediately before deletion"
 verify_project_lock
 
 if [ "$(uname)" = Darwin ]; then

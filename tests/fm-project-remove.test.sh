@@ -67,6 +67,10 @@
 #   (al) symlinked control roots cannot escape the active home's physical root
 #   (am) a shared registry lock serializes different project removals
 #   (an) deletion-boundary verification includes byte-level root .git payload
+#   (ao) the real multi-process handle scan proves completion independently of
+#        its preliminary canary
+#   (ap) control inventory is rechecked after every slow deletion-boundary scan
+#   (aq) unreachable blob, tree, and tag objects require exact authority
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -117,7 +121,7 @@ case "$mode:$args" in
   stash:*" stash list --format=%H") exit 86 ;;
   remote:*" remote") exit 86 ;;
   branches:*" for-each-ref "*) exit 86 ;;
-  contains:*" rev-list --remotes"*) exit 86 ;;
+  contains:*" rev-list --objects --remotes"*) exit 86 ;;
   prune:*" worktree prune") exit 86 ;;
 esac
 if [ "$mode" = post-prune-list ]; then
@@ -450,6 +454,43 @@ test_remote_repository_local_refs_and_objects_refuse() {
   expect_code 0 "$code" "authorized remote-backed local retention removal"
   assert_absent "$repo" "authorized remote-backed local retention survived"
   pass "remote-backed local refs and unreachable commits require exact authority"
+}
+
+test_unreachable_noncommit_objects_require_authority() {
+  local home="$TMP_ROOT/noncommit-objects" repo blob tree tag out code token fresh_token
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  repo="$home/projects/alpha"
+  blob=$(printf 'orphan blob\n' | git -C "$repo" hash-object -w --stdin)
+  tree=$(printf '100644 blob %s\torphan.txt\n' "$blob" | git -C "$repo" mktree)
+  tag=$(printf 'object %s\ntype blob\ntag orphan-object\ntagger Test User <test@example.com> 0 +0000\n\norphan tag\n' "$blob" \
+    | git -C "$repo" hash-object -t tag -w --stdin)
+  [ -n "$tree" ] && [ -n "$tag" ] || fail "could not create unreachable non-commit object fixtures"
+
+  out=$(run_remove "$home" alpha --check)
+  code=$?
+  expect_code 1 "$code" "unreachable non-commit object refusal"
+  assert_contains "$out" "3 non-commit Git object(s) are not reachable from any remote-tracking ref" \
+    "unreachable blob, tree, and tag objects were not inventoried"
+  token=$(extract_token "$out")
+  [ -n "$token" ] || fail "unreachable non-commit objects did not mint a discard token"
+
+  printf 'second orphan blob\n' | git -C "$repo" hash-object -w --stdin >/dev/null
+  out=$(run_remove "$home" alpha --confirm alpha --discard-authority "$token")
+  code=$?
+  expect_code 1 "$code" "stale non-commit object authority"
+  assert_contains "$out" "does not match the CURRENT" "new unreachable blob did not invalidate authority"
+  assert_present "$repo" "stale non-commit object authority removed the clone"
+
+  out=$(run_remove "$home" alpha --check)
+  fresh_token=$(extract_token "$out")
+  [ -n "$fresh_token" ] || fail "changed non-commit object inventory did not mint fresh authority"
+  out=$(run_remove "$home" alpha --confirm alpha --discard-authority "$fresh_token")
+  code=$?
+  expect_code 0 "$code" "authorized non-commit object removal"
+  assert_absent "$repo" "authorized non-commit object removal left the clone"
+  pass "unreachable blob, tree, and tag objects require exact authority"
 }
 
 test_no_remote_repository_refuses_then_discards() {
@@ -876,9 +917,9 @@ test_handle_scanners_require_enumeration_proof() {
   cat > "$fakebin/find" <<'SH'
 #!/usr/bin/env bash
 set -u
-case "${1:-}" in
-  /proc/[0-9]*/fd) exit 86 ;;
-esac
+for arg in "$@"; do
+  [ "$arg" != -lname ] || exit 86
+done
 exec "$FM_REAL_FIND" "$@"
 SH
   chmod +x "$fakebin/find"
@@ -886,17 +927,24 @@ SH
   out=$(PATH="$fakebin:$PATH" FM_REAL_FIND="$REAL_FIND" FM_HOME="$home" \
     "$REMOVE" alpha --confirm alpha 2>&1)
   code=$?
-  expect_code 1 "$code" "proc scanner canary refusal"
-  assert_contains "$out" "no supported way to verify" "failed proc canary was treated as an empty scan"
-  assert_present "$home/projects/alpha" "failed proc canary lost the restored clone"
-  assert_grep '- alpha ' "$home/data/projects.md" "failed proc canary changed the registry"
+  expect_code 1 "$code" "real proc scanner failure refusal"
+  assert_contains "$out" "no supported way to verify" "failed real proc scan was treated as drained"
+  assert_present "$home/projects/alpha" "failed real proc scan lost the restored clone"
+  assert_grep '- alpha ' "$home/data/projects.md" "failed real proc scan changed the registry"
 
   make_home "$darwin_home"
   make_landed_clone "$darwin_home" alpha
   add_registry "$darwin_home" alpha
   fakebin=$(fm_fakebin "$TMP_ROOT/fake-lsof-canary")
   printf '#!/usr/bin/env bash\nprintf "Darwin\\n"\n' > "$fakebin/uname"
-  printf '#!/usr/bin/env bash\nexit 86\n' > "$fakebin/lsof"
+  cat > "$fakebin/lsof" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = +D ]; then
+  exit 86
+fi
+printf 'p%s\nfcwd\nn/\n' "$$"
+SH
   cat > "$fakebin/stat" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -913,10 +961,10 @@ SH
   out=$(PATH="$fakebin:$PATH" FM_REAL_STAT="$REAL_STAT" FM_HOME="$darwin_home" \
     "$REMOVE" alpha --confirm alpha 2>&1)
   code=$?
-  expect_code 1 "$code" "lsof scanner error refusal"
-  assert_contains "$out" "no supported way to verify" "erroring lsof was treated as an empty scan"
-  assert_present "$darwin_home/projects/alpha" "erroring lsof lost the restored clone"
-  assert_grep '- alpha ' "$darwin_home/data/projects.md" "erroring lsof changed the registry"
+  expect_code 1 "$code" "real lsof scanner error refusal"
+  assert_contains "$out" "no supported way to verify" "erroring real lsof scan was treated as empty"
+  assert_present "$darwin_home/projects/alpha" "erroring real lsof scan lost the restored clone"
+  assert_grep '- alpha ' "$darwin_home/data/projects.md" "erroring real lsof scan changed the registry"
   pass "handle scanners require successful enumeration proof"
 }
 
@@ -956,6 +1004,42 @@ SH
     "root .git raced bytes were not restored"
   assert_grep '- alpha ' "$home/data/projects.md" "root .git boundary race changed the registry"
   pass "root .git bytes are rechecked after the handle drain"
+}
+
+test_control_inventory_rechecked_immediately_before_delete() {
+  local home="$TMP_ROOT/control-boundary" fakebin marker out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  marker="$home/control-race-fired"
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-control-boundary-race")
+  cat > "$fakebin/find" <<'SH'
+#!/usr/bin/env bash
+set -u
+for arg in "$@"; do
+  [ "$arg" != -lname ] || {
+    if [ ! -e "$FM_TEST_RACE_MARKER" ]; then
+      printf 'project=%s\n' "$FM_TEST_TARGET" > "$FM_TEST_STATE/raced.meta"
+      : > "$FM_TEST_RACE_MARKER"
+    fi
+    break
+  }
+done
+exec "$FM_REAL_FIND" "$@"
+SH
+  chmod +x "$fakebin/find"
+
+  out=$(PATH="$fakebin:$PATH" FM_REAL_FIND="$REAL_FIND" FM_TEST_RACE_MARKER="$marker" \
+    FM_TEST_STATE="$home/state" FM_TEST_TARGET="$home/projects/alpha" FM_HOME="$home" \
+    "$REMOVE" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "final control inventory race refusal"
+  assert_contains "$out" "external control inventory changed immediately before deletion" \
+    "late control-state change was not detected"
+  assert_present "$home/projects/alpha" "late control-state change lost the restored clone"
+  assert_present "$home/state/raced.meta" "late control-state fixture was not created"
+  assert_grep '- alpha ' "$home/data/projects.md" "late control-state change altered the registry"
+  pass "control inventory is rechecked immediately before deletion"
 }
 
 test_git_inspection_failures_refuse_closed() {
@@ -1425,6 +1509,7 @@ test_ignored_and_nested_repository_state_is_scoped
 test_clean_submodule_git_state_is_scoped
 test_unpushed_branch_and_stash_refuse
 test_remote_repository_local_refs_and_objects_refuse
+test_unreachable_noncommit_objects_require_authority
 test_no_remote_repository_refuses_then_discards
 test_live_task_metadata_refuses_structurally
 test_open_backlog_items_refuse
@@ -1452,6 +1537,7 @@ test_external_nested_repository_is_discardable_inventory
 test_open_handle_refuses_at_deletion_boundary
 test_handle_scanners_require_enumeration_proof
 test_root_git_payload_rechecked_after_handle_drain
+test_control_inventory_rechecked_immediately_before_delete
 test_dotted_project_names_are_valid
 test_instruction_contract_scopes_discard_authority
 test_scripts_catalog_allows_optional_registry
