@@ -18,7 +18,8 @@
 #       tag-only history, until explicit discard authority is presented
 #   (h) live task metadata referencing the clone refuses structurally with no
 #       discard token offered; unrelated task metadata does not block
-#   (i) open backlog items tagged (repo: <name>) refuse; done items do not
+#   (i) open backlog items tagged (repo: <name>) or with trailing repository
+#       metadata refuse; done items do not
 #   (j) a secondmate registry line listing the project refuses
 #   (k) a linked worktree that still exists refuses; a stale registration is
 #       untouched by --check and pruned only by the removal run
@@ -59,6 +60,13 @@
 #        deletion boundary and the clone is restored intact
 #   (ah) dotted project names are valid, work end to end, and are documented
 #        as valid
+#   (ai) remote-backed local tags, notes, and dangling commits require exact
+#        discard authority
+#   (aj) handle scanners refuse when their own-process canary or lsof errors
+#   (ak) nested mountpoints refuse before removal
+#   (al) symlinked control roots cannot escape the active home's physical root
+#   (am) a shared registry lock serializes different project removals
+#   (an) deletion-boundary verification includes byte-level root .git payload
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -70,6 +78,7 @@ REAL_GIT=$(command -v git)
 REAL_FIND=$(command -v find)
 REAL_MV=$(command -v mv)
 REAL_MKTEMP=$(command -v mktemp)
+REAL_STAT=$(command -v stat)
 TMP_ROOT=$(fm_test_tmproot fm-project-remove-tests)
 
 make_home() {
@@ -107,8 +116,8 @@ case "$mode:$args" in
   worktree-list:*" worktree list --porcelain") exit 86 ;;
   stash:*" stash list --format=%H") exit 86 ;;
   remote:*" remote") exit 86 ;;
-  branches:*" for-each-ref "*" refs/heads") exit 86 ;;
-  contains:*" branch -r --contains "*) exit 86 ;;
+  branches:*" for-each-ref "*) exit 86 ;;
+  contains:*" rev-list --remotes"*) exit 86 ;;
   prune:*" worktree prune") exit 86 ;;
 esac
 if [ "$mode" = post-prune-list ]; then
@@ -405,11 +414,42 @@ test_unpushed_branch_and_stash_refuse() {
   out=$(run_remove "$home" alpha --confirm alpha)
   code=$?
   expect_code 1 "$code" "unpushed refusal"
-  assert_contains "$out" "not reachable from any remote-tracking branch" "unpushed branch not inventoried"
+  assert_contains "$out" "not reachable from any remote-tracking ref" "unpushed commit not inventoried"
   assert_contains "$out" "stash entry" "stash not inventoried"
   assert_present "$home/projects/alpha" "unpushed refusal still removed the clone"
   assert_grep '- alpha ' "$home/data/projects.md" "unpushed refusal mutated the registry"
   pass "unpushed branches and stashes refuse as unlanded work"
+}
+
+test_remote_repository_local_refs_and_objects_refuse() {
+  local home="$TMP_ROOT/remote-local-retention" repo out code token base
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  repo="$home/projects/alpha"
+  base=$(git -C "$repo" rev-parse HEAD)
+  git -C "$repo" tag retained-local-tag "$base"
+  git -C "$repo" notes add -m "local note" "$base"
+  printf 'dangling commit\n' > "$repo/dangling.txt"
+  git -C "$repo" add dangling.txt
+  git -C "$repo" commit -qm "dangling local commit"
+  git -C "$repo" reset -q --hard "$base"
+
+  out=$(run_remove "$home" alpha --check)
+  code=$?
+  expect_code 1 "$code" "remote-backed local retention refusal"
+  assert_contains "$out" "commit object(s) are not reachable from any remote-tracking ref" \
+    "remote-backed dangling or note commit was not inventoried"
+  assert_contains "$out" "local ref refs/tags/retained-local-tag" "local tag ref was not inventoried"
+  assert_contains "$out" "local ref refs/notes/commits" "local note ref was not inventoried"
+  token=$(extract_token "$out")
+  [ -n "$token" ] || fail "remote-backed local retention did not mint a discard token"
+
+  out=$(run_remove "$home" alpha --confirm alpha --discard-authority "$token")
+  code=$?
+  expect_code 0 "$code" "authorized remote-backed local retention removal"
+  assert_absent "$repo" "authorized remote-backed local retention survived"
+  pass "remote-backed local refs and unreachable commits require exact authority"
 }
 
 test_no_remote_repository_refuses_then_discards() {
@@ -503,7 +543,7 @@ test_open_backlog_items_refuse() {
   add_registry "$home" alpha
   cat > "$home/data/backlog.md" <<'EOF'
 ## Queued
-- [ ] fix-a - Fix the thing (repo: alpha)
+- [ ] fix-a - Fix the thing (repo: alpha, since 2026-07-08)
 - [ ] other-b - Unrelated (repo: beta)
 ## Done
 - [x] old-a - Landed earlier (repo: alpha)
@@ -582,6 +622,67 @@ test_active_home_roots_cannot_be_overridden() {
   pass "state, data, and projects roots remain contained by the active home"
 }
 
+test_symlinked_control_roots_stay_inside_active_home() {
+  local label home other clone out code
+  for label in state data projects; do
+    home="$TMP_ROOT/control-symlink-$label"
+    other="$TMP_ROOT/control-symlink-$label-other"
+    make_home "$home"
+    make_home "$other"
+    if [ "$label" = projects ]; then
+      make_landed_clone "$other" alpha
+      add_registry "$home" alpha
+      clone="$other/projects/alpha"
+    else
+      make_landed_clone "$home" alpha
+      if [ "$label" = data ]; then
+        add_registry "$other" alpha
+      else
+        add_registry "$home" alpha
+      fi
+      clone="$home/projects/alpha"
+    fi
+    rm -rf -- "${home:?}/${label:?}"
+    ln -s "$other/$label" "$home/$label"
+
+    out=$(run_remove "$home" alpha --check)
+    code=$?
+    expect_code 1 "$code" "$label symlinked control-root refusal"
+    assert_contains "$out" "outside the active FM_HOME" "$label symlink escape was not rejected"
+    assert_present "$clone" "$label symlink escape removed the clone"
+  done
+  pass "resolved control roots cannot escape the active home through symlinks"
+}
+
+test_nested_mountpoint_refuses_before_removal() {
+  local home="$TMP_ROOT/nested-mount" mounted fakebin out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  mounted="$home/projects/alpha/mounted"
+  mkdir "$mounted"
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-stat-mount")
+  cat > "$fakebin/stat" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = -c ] && [ "${2:-}" = %d ] && [ "${3:-}" = "${FM_TEST_MOUNT_PATH:-}" ]; then
+  printf '999999999\n'
+  exit 0
+fi
+exec "$FM_REAL_STAT" "$@"
+SH
+  chmod +x "$fakebin/stat"
+
+  out=$(PATH="$fakebin:$PATH" FM_REAL_STAT="$REAL_STAT" FM_TEST_MOUNT_PATH="$mounted" \
+    FM_HOME="$home" "$REMOVE" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "nested mountpoint refusal"
+  assert_contains "$out" "nested mountpoint exists" "nested mountpoint was not rejected"
+  assert_present "$home/projects/alpha" "nested mountpoint refusal removed the clone"
+  assert_grep '- alpha ' "$home/data/projects.md" "nested mountpoint refusal changed the registry"
+  pass "nested mountpoints refuse before quarantine or deletion"
+}
+
 test_root_override_cannot_hide_running_checkout() {
   local home="$TMP_ROOT/root-identity" fake_root embedded out code
   make_home "$home"
@@ -631,7 +732,7 @@ test_state_enumeration_failure_refuses_closed() {
 
 test_transaction_lock_and_final_inventory_recheck() {
   local home="$TMP_ROOT/transaction" prune_home="$TMP_ROOT/prune-race" quarantine_home="$TMP_ROOT/quarantine-race" \
-    recreate_home="$TMP_ROOT/quarantine-recreate" fakebin owner lock marker out code preserved
+    recreate_home="$TMP_ROOT/quarantine-recreate" fakebin owner lock registry_owner registry_lock marker out code preserved
   make_home "$home"
   make_landed_clone "$home" alpha
   add_registry "$home" alpha
@@ -648,6 +749,20 @@ test_transaction_lock_and_final_inventory_recheck() {
   assert_present "$home/projects/alpha" "lock contention removed the clone"
   rm "$lock" "$owner/pid"
   rmdir "$owner"
+
+  registry_lock="$home/state/.project-remove-registry.lock"
+  registry_owner="$home/state/.project-remove-registry.lock.owner.fixture"
+  mkdir "$registry_owner"
+  printf '%s\n' "$$" > "$registry_owner/pid"
+  ln -s "$registry_owner" "$registry_lock"
+  out=$(run_remove "$home" alpha --confirm alpha)
+  code=$?
+  expect_code 1 "$code" "shared registry lock contention"
+  assert_contains "$out" "shared registry lock" "shared registry lock was not honored"
+  assert_present "$home/projects/alpha" "shared registry lock contention removed the clone"
+  assert_absent "$lock" "project lock survived shared registry lock refusal"
+  rm "$registry_lock" "$registry_owner/pid"
+  rmdir "$registry_owner"
 
   fakebin=$(fm_fakebin "$TMP_ROOT/fake-find-race")
   marker="$home/race-fired"
@@ -750,6 +865,97 @@ test_transaction_lock_and_final_inventory_recheck() {
   [ -n "$preserved" ] || fail "authorized clone bytes were not preserved after target recreation"
   assert_grep '- alpha ' "$recreate_home/data/projects.md" "target recreation changed the registry"
   pass "project removal holds a lock and rechecks inventory before mutation"
+}
+
+test_handle_scanners_require_enumeration_proof() {
+  local home="$TMP_ROOT/scanner-find" darwin_home="$TMP_ROOT/scanner-lsof" fakebin out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-find-canary")
+  cat > "$fakebin/find" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  /proc/[0-9]*/fd) exit 86 ;;
+esac
+exec "$FM_REAL_FIND" "$@"
+SH
+  chmod +x "$fakebin/find"
+
+  out=$(PATH="$fakebin:$PATH" FM_REAL_FIND="$REAL_FIND" FM_HOME="$home" \
+    "$REMOVE" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "proc scanner canary refusal"
+  assert_contains "$out" "no supported way to verify" "failed proc canary was treated as an empty scan"
+  assert_present "$home/projects/alpha" "failed proc canary lost the restored clone"
+  assert_grep '- alpha ' "$home/data/projects.md" "failed proc canary changed the registry"
+
+  make_home "$darwin_home"
+  make_landed_clone "$darwin_home" alpha
+  add_registry "$darwin_home" alpha
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-lsof-canary")
+  printf '#!/usr/bin/env bash\nprintf "Darwin\\n"\n' > "$fakebin/uname"
+  printf '#!/usr/bin/env bash\nexit 86\n' > "$fakebin/lsof"
+  cat > "$fakebin/stat" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = -f ]; then
+  case "${2:-}" in
+    %Lp) shift 2; exec "$FM_REAL_STAT" -c %a "$@" ;;
+    %d) shift 2; exec "$FM_REAL_STAT" -c %d "$@" ;;
+  esac
+fi
+exec "$FM_REAL_STAT" "$@"
+SH
+  chmod +x "$fakebin/uname" "$fakebin/lsof" "$fakebin/stat"
+
+  out=$(PATH="$fakebin:$PATH" FM_REAL_STAT="$REAL_STAT" FM_HOME="$darwin_home" \
+    "$REMOVE" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "lsof scanner error refusal"
+  assert_contains "$out" "no supported way to verify" "erroring lsof was treated as an empty scan"
+  assert_present "$darwin_home/projects/alpha" "erroring lsof lost the restored clone"
+  assert_grep '- alpha ' "$darwin_home/data/projects.md" "erroring lsof changed the registry"
+  pass "handle scanners require successful enumeration proof"
+}
+
+test_root_git_payload_rechecked_after_handle_drain() {
+  local home="$TMP_ROOT/root-git-boundary" fakebin marker out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  marker="$home/root-git-race-fired"
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-root-git-race")
+  cat > "$fakebin/find" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  /proc/[0-9]*/fd)
+    if [ ! -e "$FM_TEST_RACE_MARKER" ]; then
+      for clone in "$FM_TEST_PROJECTS"/.fm-project-remove-alpha.*/clone; do
+        [ -d "$clone/.git" ] || continue
+        printf 'boundary race\n' > "$clone/.git/local-boundary-metadata"
+        : > "$FM_TEST_RACE_MARKER"
+        break
+      done
+    fi
+    ;;
+esac
+exec "$FM_REAL_FIND" "$@"
+SH
+  chmod +x "$fakebin/find"
+
+  out=$(PATH="$fakebin:$PATH" FM_REAL_FIND="$REAL_FIND" FM_TEST_RACE_MARKER="$marker" \
+    FM_TEST_PROJECTS="$home/projects" FM_HOME="$home" "$REMOVE" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "root git payload boundary race refusal"
+  assert_contains "$out" "payload changed at the deletion boundary" \
+    "root .git byte change was omitted from deletion-boundary verification"
+  assert_present "$home/projects/alpha/.git/local-boundary-metadata" \
+    "root .git raced bytes were not restored"
+  assert_grep '- alpha ' "$home/data/projects.md" "root .git boundary race changed the registry"
+  pass "root .git bytes are rechecked after the handle drain"
 }
 
 test_git_inspection_failures_refuse_closed() {
@@ -1218,6 +1424,7 @@ test_discard_authority_is_project_scoped
 test_ignored_and_nested_repository_state_is_scoped
 test_clean_submodule_git_state_is_scoped
 test_unpushed_branch_and_stash_refuse
+test_remote_repository_local_refs_and_objects_refuse
 test_no_remote_repository_refuses_then_discards
 test_live_task_metadata_refuses_structurally
 test_open_backlog_items_refuse
@@ -1231,6 +1438,8 @@ test_stale_registry_repair_is_idempotent_and_loud
 test_unregistered_clone_removed_with_notice
 test_gate_agent_is_refused
 test_active_home_roots_cannot_be_overridden
+test_symlinked_control_roots_stay_inside_active_home
+test_nested_mountpoint_refuses_before_removal
 test_root_override_cannot_hide_running_checkout
 test_state_enumeration_failure_refuses_closed
 test_transaction_lock_and_final_inventory_recheck
@@ -1241,6 +1450,8 @@ test_interrupted_quarantine_never_stale_repairs
 test_invalid_git_named_entries_stay_discardable
 test_external_nested_repository_is_discardable_inventory
 test_open_handle_refuses_at_deletion_boundary
+test_handle_scanners_require_enumeration_proof
+test_root_git_payload_rechecked_after_handle_drain
 test_dotted_project_names_are_valid
 test_instruction_contract_scopes_discard_authority
 test_scripts_catalog_allows_optional_registry

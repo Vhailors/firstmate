@@ -24,6 +24,8 @@
 #     corrupt that other repository's worktree registry.
 #   - The clone may never be, or contain, this firstmate checkout or the
 #     active FM_HOME.
+#   - A nested mountpoint under the clone refuses before quarantine and is
+#     rechecked at the deletion boundary; deletion is filesystem-bounded.
 #
 # Blockers - the transaction refuses while any exist.
 # STRUCTURAL blockers can never be covered by discard authority; resolve them
@@ -51,8 +53,9 @@
 #     checkout and leaves the external store untouched, with a stale
 #     registration to clean through Git tooling afterwards
 #   - stash entries
-#   - branches (and a detached HEAD) not reachable from any remote-tracking
-#     branch, including every commit object of a repository with no remote
+#   - every commit object not reachable from any remote-tracking ref, including
+#     commits retained only by a local tag, note, reflog, or dangling object,
+#     plus every local tag, note, and other non-branch ref
 #
 # Discard authority is object- and state-scoped, never prose: a refusal whose
 # blockers are all discardable prints the exact token
@@ -66,8 +69,9 @@
 # the previous step):
 #   1. every check above passes, or every blocker is discardable and exactly
 #      covered by the presented discard-authority token; a per-project
-#      transaction lock is acquired and the complete risk inventory is
-#      rechecked unchanged immediately before mutation
+#      transaction lock and a shared registry lock are acquired and the
+#      complete risk inventory is rechecked unchanged immediately before
+#      mutation
 #   2. `git worktree prune` inside the clone (supported owner tool, safe:
 #      it drops only registrations whose directories are already gone)
 #   3. the clone is atomically renamed into a restrictive same-filesystem
@@ -236,6 +240,20 @@ PROJECTS_CONFIG_PHYS=$(canonical_path "$PROJECTS") \
 [ "$PROJECTS_CONFIG_PHYS" = "$EXPECTED_PROJECTS" ] \
   || die "refusing: projects directory $PROJECTS is outside the active FM_HOME $FM_HOME"
 
+require_control_root_under_home() {
+  local label=$1 resolved=$2
+  [ "$resolved" != "$FM_HOME_PHYS" ] \
+    || die "refusing: $label directory resolves to the active FM_HOME root instead of beneath it"
+  case "$resolved/" in
+    "$FM_HOME_PHYS"/*) : ;;
+    *) die "refusing: $label directory resolves outside the active FM_HOME $FM_HOME" ;;
+  esac
+}
+
+require_control_root_under_home state "$STATE_PHYS"
+require_control_root_under_home data "$DATA_PHYS"
+require_control_root_under_home projects "$PROJECTS_CONFIG_PHYS"
+
 if command -v shasum >/dev/null 2>&1; then
   HASH_TOOL=shasum
 elif command -v sha256sum >/dev/null 2>&1; then
@@ -272,6 +290,14 @@ path_mode() {
     stat -f '%Lp' "$1" 2>/dev/null
   else
     stat -c '%a' "$1" 2>/dev/null
+  fi
+}
+
+path_device() {
+  if [ "$(uname)" = Darwin ]; then
+    stat -f '%d' "$1" 2>/dev/null
+  else
+    stat -c '%d' "$1" 2>/dev/null
   fi
 }
 
@@ -337,6 +363,26 @@ full_tree_inventory_hash() {
       | fingerprint_hash
   ) || return 1
   printf 'directory-root:%s\nentries:%s\n' "$root_mode" "$entries_hash" | fingerprint_hash
+}
+
+nested_mount_records() {
+  local repo=$1 root_device path device mountpoint decoded
+  root_device=$(path_device "$repo") || return 1
+  find "$repo" -xdev -mindepth 1 -print >/dev/null 2>&1 || return 1
+  while IFS= read -r -d '' path; do
+    device=$(path_device "$path") || return 1
+    [ "$device" = "$root_device" ] || printf 'device:%s\n' "$path"
+  done < <(find "$repo" -xdev -mindepth 1 -print0 2>/dev/null)
+  if [ "$(uname)" = Linux ]; then
+    [ -r /proc/self/mountinfo ] || return 1
+    while IFS=' ' read -r _ _ _ _ mountpoint _; do
+      decoded=$(printf '%b' "$mountpoint") || return 1
+      [ "$decoded" != "$repo" ] || continue
+      case "$decoded/" in
+        "$repo"/*) printf 'mountinfo:%s\n' "$decoded" ;;
+      esac
+    done < /proc/self/mountinfo
+  fi
 }
 
 optional_path_hash() {
@@ -536,11 +582,17 @@ control_inventory_hash() {
 }
 
 deletion_boundary_hash() {
-  local repo=$1 tree_hash git_hash nested_hash
+  local repo=$1 include_full_git=${2:-1} tree_hash git_hash nested_hash gitdir_hash
   tree_hash=$(repo_inventory_hash "$repo") || return 1
   git_hash=$(git_repository_state_hash "$repo" 0) || return 1
   nested_hash=$(nested_git_state_hash "$repo") || return 1
-  printf 'tree:%s\ngit:%s\nnested:%s\n' "$tree_hash" "$git_hash" "$nested_hash" | fingerprint_hash
+  if [ "$include_full_git" -eq 1 ]; then
+    gitdir_hash=$(full_tree_inventory_hash "$repo/.git") || return 1
+  else
+    gitdir_hash=omitted
+  fi
+  printf 'tree:%s\ngit:%s\nnested:%s\ngitdir:%s\n' "$tree_hash" "$git_hash" "$nested_hash" "$gitdir_hash" \
+    | fingerprint_hash
 }
 
 normalized_worktree_state_hash() {
@@ -579,22 +631,30 @@ quarantine_boundary_hash() {
 # means drained); returns 2 when no scan mechanism exists on this platform, in
 # which case the caller must refuse.
 quarantine_open_handles() {
-  local dir=$1 pid_dir proc_roots=()
-  if [ "$(uname)" = Linux ] && [ -d /proc ]; then
+  local dir=$1 pid_dir proc_roots=() canary output status
+  if [ "$(uname)" = Linux ]; then
+    [ -d /proc ] || return 2
+    [ -r "/proc/$$/fd" ] && [ -x "/proc/$$/fd" ] || return 2
+    canary=$(find "/proc/$$/fd" -mindepth 1 -maxdepth 1 -print 2>/dev/null) || return 2
+    [ -n "$canary" ] || return 2
     for pid_dir in /proc/[0-9]*; do
       proc_roots+=("$pid_dir/fd" "$pid_dir/map_files" "$pid_dir/cwd" "$pid_dir/root" "$pid_dir/exe")
     done
     [ "${#proc_roots[@]}" -gt 0 ] || return 2
-    # Handles of other users' processes are unreadable and invisible to any
-    # same-user scan mechanism; suppressed errors only ever hide those.
-    find "${proc_roots[@]}" -maxdepth 1 -lname "$dir*" -print 2>/dev/null || true
+    find "${proc_roots[@]}" -maxdepth 1 \( -lname "$dir" -o -lname "$dir/*" \) -print 2>/dev/null || true
     return 0
   fi
-  if command -v lsof >/dev/null 2>&1; then
-    lsof +D "$dir" 2>/dev/null | awk 'NR > 1 { print $2, $4 }' || true
-    return 0
+  command -v lsof >/dev/null 2>&1 || return 2
+  canary=$(lsof -a -p "$$" -d cwd -Fn 2>&1) || return 2
+  [ -n "$canary" ] || return 2
+  if output=$(lsof +D "$dir" 2>&1); then
+    status=0
+  else
+    status=$?
   fi
-  return 2
+  [ "$status" -le 1 ] || return 2
+  [ "$status" -eq 0 ] || { [ -z "$output" ] || return 2; }
+  printf '%s\n' "$output" | awk 'NR > 1 { print $2, $4 }'
 }
 
 validate_discard_authority() {
@@ -629,6 +689,9 @@ stale_repair_inventory_hash() {
 PROJECT_REMOVE_LOCK=
 PROJECT_REMOVE_LOCK_OWNER=
 PROJECT_REMOVE_LOCK_HELD=0
+REGISTRY_REMOVE_LOCK=
+REGISTRY_REMOVE_LOCK_OWNER=
+REGISTRY_REMOVE_LOCK_HELD=0
 REGISTRY_TMP=
 QUARANTINE_PARENT=
 QUARANTINE=
@@ -642,6 +705,10 @@ release_project_lock() {
   fi
   if [ -n "$QUARANTINE_PARENT" ] && [ "$QUARANTINE_PRESERVE" -eq 0 ]; then
     rmdir "$QUARANTINE_PARENT" 2>/dev/null || true
+  fi
+  if [ "$REGISTRY_REMOVE_LOCK_HELD" -eq 1 ]; then
+    fm_lock_release "$REGISTRY_REMOVE_LOCK"
+    REGISTRY_REMOVE_LOCK_HELD=0
   fi
   if [ "$PROJECT_REMOVE_LOCK_HELD" -eq 1 ]; then
     fm_lock_release "$PROJECT_REMOVE_LOCK"
@@ -664,11 +731,19 @@ acquire_project_lock() {
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  REGISTRY_REMOVE_LOCK="$STATE/.project-remove-registry.lock"
+  if ! fm_lock_try_acquire "$REGISTRY_REMOVE_LOCK"; then
+    die "refusing: another project-removal transaction holds the shared registry lock $REGISTRY_REMOVE_LOCK"
+  fi
+  REGISTRY_REMOVE_LOCK_OWNER=$FM_LOCK_OWNER_DIR
+  REGISTRY_REMOVE_LOCK_HELD=1
 }
 
 verify_project_lock() {
   if [ "$PROJECT_REMOVE_LOCK_HELD" -ne 1 ] \
-    || ! fm_lock_points_to_owner "$PROJECT_REMOVE_LOCK" "$PROJECT_REMOVE_LOCK_OWNER"; then
+    || ! fm_lock_points_to_owner "$PROJECT_REMOVE_LOCK" "$PROJECT_REMOVE_LOCK_OWNER" \
+    || [ "$REGISTRY_REMOVE_LOCK_HELD" -ne 1 ] \
+    || ! fm_lock_points_to_owner "$REGISTRY_REMOVE_LOCK" "$REGISTRY_REMOVE_LOCK_OWNER"; then
     die "refusing: project-removal transaction lock was lost before mutation"
   fi
 }
@@ -813,6 +888,10 @@ TARGET=$(canonical_existing_dir "$CLONE") \
 [ "$TARGET" = "$PROJECTS_PHYS/$NAME" ] \
   || die "refusing: $CLONE resolves to $TARGET, not $PROJECTS_PHYS/$NAME; wrong home or a relocated clone"
 [ "$TARGET" != / ] || die "refusing: resolved target is the filesystem root"
+nested_mounts=$(nested_mount_records "$TARGET") \
+  || die "refusing: cannot verify that $TARGET contains no nested mountpoints"
+[ -z "$nested_mounts" ] \
+  || die "refusing: nested mountpoint exists under $TARGET: ${nested_mounts%%$'\n'*}"
 
 ACTUAL_FM_ROOT_PHYS=$(canonical_existing_dir "$ACTUAL_FM_ROOT") \
   || die "cannot resolve the running firstmate checkout $ACTUAL_FM_ROOT"
@@ -930,58 +1009,45 @@ remotes=$(git -C "$TARGET" remote 2>/dev/null) \
   || die "refusing: cannot inventory remotes of $TARGET"
 [ -n "$remotes" ] || add_fprint "remote:none"
 
-branch_landed() {
-  local sha=$1 contains
-  [ -n "$remotes" ] || return 1
-  contains=$(git -C "$TARGET" branch -r --contains "$sha" 2>/dev/null) \
-    || die "refusing: cannot inspect remote-tracking reachability for $sha"
-  [ -n "$contains" ]
-}
-
+commit_objects=$(
+  git -C "$TARGET" cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype)' 2>/dev/null \
+    | awk '$2 == "commit" { print $1 }' \
+    | LC_ALL=C sort -u
+) || die "refusing: cannot inventory commit objects of $TARGET"
 if [ -n "$remotes" ]; then
-  branches=$(git -C "$TARGET" for-each-ref --format='%(refname:short) %(objectname)' refs/heads 2>/dev/null) \
-    || die "refusing: cannot inventory local branches of $TARGET"
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    bname=${line% *}
-    bsha=${line##* }
-    if ! branch_landed "$bsha"; then
-      add_discardable "branch $bname ($bsha) is not reachable from any remote-tracking branch"
-      add_fprint "branch:$bname:$bsha"
-    fi
-  done <<< "$branches"
-
-  if head_sha=$(git -C "$TARGET" rev-parse -q --verify HEAD 2>/dev/null); then
-    if git -C "$TARGET" symbolic-ref -q HEAD >/dev/null 2>&1; then
-      :
-    else
-      symbolic_status=$?
-      [ "$symbolic_status" -eq 1 ] \
-        || die "refusing: cannot determine whether HEAD is detached in $TARGET"
-      if ! branch_landed "$head_sha"; then
-        add_discardable "detached HEAD $head_sha is not reachable from any remote-tracking branch"
-        add_fprint "head:$head_sha"
-      fi
-    fi
-  else
-    head_status=$?
-    [ "$head_status" -eq 1 ] \
-      || die "refusing: cannot inspect HEAD of $TARGET"
-  fi
+  remote_commits=$(git -C "$TARGET" rev-list --remotes 2>/dev/null | LC_ALL=C sort -u) \
+    || die "refusing: cannot inspect remote-tracking commit reachability in $TARGET"
+  unlanded_commits=$(LC_ALL=C comm -23 \
+    <(printf '%s\n' "$commit_objects") \
+    <(printf '%s' "$remote_commits")) \
+    || die "refusing: cannot compare local and remote-tracking commit inventories"
 else
-  commit_objects=$(
-    git -C "$TARGET" cat-file --batch-all-objects --batch-check='%(objectname) %(objecttype)' 2>/dev/null \
-      | awk '$2 == "commit" { print $1 }' \
-      | LC_ALL=C sort -u
-  ) || die "refusing: cannot inventory commit objects of no-remote repository $TARGET"
-  if [ -n "$commit_objects" ]; then
-    commit_count=$(printf '%s\n' "$commit_objects" | grep -c .)
-    add_discardable "$commit_count commit object(s) exist only locally (the repository has no remote)"
-    while IFS= read -r commit_sha; do
-      [ -n "$commit_sha" ] && add_fprint "commit:$commit_sha"
-    done <<< "$commit_objects"
-  fi
+  unlanded_commits=$commit_objects
 fi
+if [ -n "$unlanded_commits" ]; then
+  commit_count=$(printf '%s\n' "$unlanded_commits" | grep -c .)
+  if [ -n "$remotes" ]; then
+    add_discardable "$commit_count commit object(s) are not reachable from any remote-tracking ref"
+  else
+    add_discardable "$commit_count commit object(s) exist only locally (the repository has no remote)"
+  fi
+  while IFS= read -r commit_sha; do
+    [ -n "$commit_sha" ] && add_fprint "commit:$commit_sha"
+  done <<< "$unlanded_commits"
+fi
+
+local_refs=$(git -C "$TARGET" for-each-ref --format='%(refname) %(objectname)' 2>/dev/null) \
+  || die "refusing: cannot inventory local refs of $TARGET"
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  refname=${line% *}
+  refsha=${line##* }
+  case "$refname" in
+    refs/remotes/*|refs/heads/*|refs/stash) continue ;;
+  esac
+  add_discardable "local ref $refname ($refsha) is not a remote-tracking ref"
+  add_fprint "ref:$refname:$refsha"
+done <<< "$local_refs"
 
 if [ -e "$STATE" ] || [ -L "$STATE" ]; then
   [ -d "$STATE" ] || die "refusing: state path $STATE is not a directory"
@@ -1009,7 +1075,24 @@ fi
 
 if [ -f "$DATA/backlog.md" ]; then
   [ -r "$DATA/backlog.md" ] || die "refusing: cannot read backlog $DATA/backlog.md"
-  open_items=$(awk -v tag="(repo: $NAME)" '/^- \[ \]/ && index($0, tag) { print $4 }' "$DATA/backlog.md" | tr '\n' ' ') \
+  open_items=$(awk -v repo="$NAME" '
+    /^- \[ \]/ {
+      rest = $0
+      while (match(rest, /\(repo:[[:space:]]*/)) {
+        rest = substr(rest, RSTART + RLENGTH)
+        end = match(rest, /[),]/)
+        if (!end) break
+        value = substr(rest, 1, end - 1)
+        sub(/^[[:space:]]*/, "", value)
+        sub(/[[:space:]]*$/, "", value)
+        if (value == repo) {
+          print $4
+          break
+        }
+        rest = substr(rest, end + 1)
+      }
+    }
+  ' "$DATA/backlog.md" | tr '\n' ' ') \
     || die "refusing: cannot inspect backlog $DATA/backlog.md"
   open_items=${open_items% }
   [ -z "$open_items" ] \
@@ -1108,7 +1191,7 @@ locked_transaction_snapshot=$(transaction_inventory_hash) \
   || die "refusing: cannot recheck the complete project-removal inventory under lock"
 [ "$locked_transaction_snapshot" = "$checked_transaction_snapshot" ] \
   || die "refusing: project-removal inventory changed before mutation; re-run --check and obtain fresh authority if required"
-authorized_deletion_snapshot=$(deletion_boundary_hash "$TARGET") \
+authorized_deletion_snapshot=$(deletion_boundary_hash "$TARGET" 0) \
   || die "refusing: cannot capture the authorized deletion payload under lock"
 authorized_control_snapshot=$(control_inventory_hash) \
   || die "refusing: cannot capture the authorized external control inventory under lock"
@@ -1139,7 +1222,7 @@ if [ "$leftover_wt" -gt 0 ]; then
   die "refusing: $leftover_wt linked worktree registration(s) survived git worktree prune (locked or unprunable); resolve them through git worktree tooling first - clone and registry left untouched"
 fi
 
-post_prune_deletion_snapshot=$(deletion_boundary_hash "$TARGET") \
+post_prune_deletion_snapshot=$(deletion_boundary_hash "$TARGET" 0) \
   || die "refusing: cannot revalidate the deletion payload after git worktree prune"
 [ "$post_prune_deletion_snapshot" = "$authorized_deletion_snapshot" ] \
   || die "refusing: project payload changed during git worktree prune; clone and registry left untouched"
@@ -1155,6 +1238,10 @@ pre_rename_worktree_count=$(printf '%s\n' "$pre_rename_inventory" | awk '/^workt
   || die "refusing: cannot count deletion-boundary worktrees"
 [ "$pre_rename_worktree_count" -eq 1 ] \
   || die "refusing: a linked worktree appeared at the deletion boundary; clone and registry left untouched"
+pre_rename_mounts=$(nested_mount_records "$TARGET") \
+  || die "refusing: cannot recheck nested mountpoints at the deletion boundary"
+[ -z "$pre_rename_mounts" ] \
+  || die "refusing: a nested mountpoint appeared at the deletion boundary: ${pre_rename_mounts%%$'\n'*}"
 verify_project_lock
 
 prepare_project_quarantine
@@ -1192,9 +1279,17 @@ final_deletion_snapshot=$(quarantine_boundary_hash "$QUARANTINE") \
   || refuse_quarantined_change "refusing: cannot re-verify the quarantined payload at the deletion boundary"
 [ "$final_deletion_snapshot" = "$pre_quarantine_snapshot" ] \
   || refuse_quarantined_change "refusing: the quarantined payload changed at the deletion boundary"
+final_nested_mounts=$(nested_mount_records "$QUARANTINE") \
+  || refuse_quarantined_change "refusing: cannot verify nested mountpoints immediately before deletion"
+[ -z "$final_nested_mounts" ] \
+  || refuse_quarantined_change "refusing: a nested mountpoint exists at the deletion boundary: ${final_nested_mounts%%$'\n'*}"
 verify_project_lock
 
-rm_err=$(rm -rf -- "$QUARANTINE" 2>&1 >/dev/null) || true
+if [ "$(uname)" = Darwin ]; then
+  rm_err=$(rm -rfx -- "$QUARANTINE" 2>&1 >/dev/null) || true
+else
+  rm_err=$(rm -rf --one-file-system -- "$QUARANTINE" 2>&1 >/dev/null) || true
+fi
 if [ -e "$QUARANTINE" ] || [ -L "$QUARANTINE" ]; then
   QUARANTINE_PRESERVE=1
   [ -z "$rm_err" ] || printf '%s\n' "$rm_err" >&2
@@ -1209,6 +1304,7 @@ QUARANTINE_PARENT=
 
 # Step 5: registry line drop, only now that clone absence is confirmed.
 if [ "$reg_present" -eq 1 ]; then
+  verify_project_lock
   remove_registry_line
   printf 'removed project %s: clone %s deleted, registry line dropped from %s\n' "$NAME" "$TARGET" "$REG"
 else
