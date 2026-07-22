@@ -56,6 +56,8 @@
 #   - every Git object not reachable from any remote-tracking ref, including
 #     commit, tree, blob, and tag objects retained only by a local ref, reflog,
 #     or dangling object, plus every local tag, note, and other non-branch ref
+#     (lazy object fetching is disabled, and missing promised objects refuse
+#     because remote reachability cannot be proven locally by a read-only run)
 #
 # Discard authority is object- and state-scoped, never prose: a refusal whose
 # blockers are all discardable prints the exact token
@@ -270,6 +272,7 @@ else
 fi
 
 export GIT_OPTIONAL_LOCKS=0
+export GIT_NO_LAZY_FETCH=1
 
 fingerprint_hash() {
   local digest
@@ -624,6 +627,18 @@ quarantine_boundary_hash() {
   printf 'deletion:%s\nworktrees:%s\n' "$deletion_hash" "$worktree_hash" | fingerprint_hash
 }
 
+proc_status_identity() {
+  local status=$1 key first second _third _fourth uid='' state=''
+  while read -r key first second _third _fourth; do
+    case "$key" in
+      Uid:) uid=$second ;;
+      State:) state=$first ;;
+    esac
+  done < "$status" || return 1
+  [ -n "$uid" ] && [ -n "$state" ] || return 1
+  printf '%s %s\n' "$uid" "$state"
+}
+
 # Deletion-boundary handle scan: after the quarantine rename no NEW handle can
 # be opened through the canonical clone path, so the only writers that could
 # still mutate the payload are processes that already hold an open file, map,
@@ -631,39 +646,76 @@ quarantine_boundary_hash() {
 # means drained); returns 2 when no scan mechanism exists on this platform, in
 # which case the caller must refuse.
 quarantine_open_handles() {
-  local dir=$1 pid_dir proc_roots=() canary scan_canary output status line scan_verified
+  local dir=$1 dir_phys dir_prefix current_uid pid_dir proc_roots=() scan_canary output status line \
+    scan_verified identity pid_uid pid_state target
+  dir_phys=$(canonical_existing_dir "$dir") || return 2
+  dir_prefix="$dir_phys/"
   if [ "$(uname)" = Linux ]; then
     [ -d /proc ] || return 2
-    [ -r "/proc/$$/fd" ] && [ -x "/proc/$$/fd" ] || return 2
-    canary=$(find "/proc/$$/fd" -mindepth 1 -maxdepth 1 -print 2>/dev/null) || return 2
-    [ -n "$canary" ] || return 2
+    current_uid=$(id -u) || return 2
     scan_canary="/proc/$$/status"
     [ -r "$scan_canary" ] || return 2
-    for pid_dir in /proc/[0-9]*; do
-      proc_roots+=("$pid_dir/fd" "$pid_dir/map_files" "$pid_dir/cwd" "$pid_dir/root" "$pid_dir/exe")
-    done
-    [ "${#proc_roots[@]}" -gt 0 ] || return 2
-    output=
-    if output=$(find "${proc_roots[@]}" "$scan_canary" -maxdepth 1 \
-      \( -path "$scan_canary" -print -o \( -lname "$dir" -o -lname "$dir/*" \) -print \) \
-      2>/dev/null); then
-      :
-    fi
     scan_verified=0
-    while IFS= read -r line; do
-      if [ "$line" = "$scan_canary" ]; then
-        scan_verified=1
-      elif [ -n "$line" ]; then
-        printf '%s\n' "$line"
+    for pid_dir in /proc/[0-9]*; do
+      [ -d "$pid_dir" ] || continue
+      if identity=$(proc_status_identity "$pid_dir/status" 2>/dev/null); then
+        read -r pid_uid pid_state <<< "$identity"
+      else
+        [ ! -d "$pid_dir" ] && continue
+        pid_uid=$(stat -c '%u' "$pid_dir" 2>/dev/null) || return 2
+        [ "$pid_uid" != "$current_uid" ] && continue
+        return 2
       fi
-    done <<< "$output"
+      [ "$pid_uid" = "$current_uid" ] || continue
+      [ "$pid_state" != Z ] || continue
+      proc_roots=("$pid_dir/fd" "$pid_dir/map_files" "$pid_dir/cwd" "$pid_dir/root" "$pid_dir/exe")
+      [ "$pid_dir" != "/proc/$$" ] || proc_roots+=("$scan_canary")
+      if output=$(find "${proc_roots[@]}" -maxdepth 1 \
+        \( -path "$scan_canary" -print -o -type l -print \) 2>/dev/null); then
+        status=0
+      else
+        status=$?
+      fi
+      if [ "$status" -ne 0 ]; then
+        if identity=$(proc_status_identity "$pid_dir/status" 2>/dev/null); then
+          read -r pid_uid pid_state <<< "$identity"
+          [ "$pid_uid" != "$current_uid" ] && continue
+          [ "$pid_state" = Z ] && continue
+          return 2
+        fi
+        [ ! -d "$pid_dir" ] && continue
+        return 2
+      fi
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        if [ "$line" = "$scan_canary" ]; then
+          scan_verified=1
+          continue
+        fi
+        if target=$(readlink "$line" 2>/dev/null); then
+          if [ "$target" = "$dir_phys" ] || [ "${target:0:${#dir_prefix}}" = "$dir_prefix" ]; then
+            printf '%s\n' "$line"
+          fi
+          continue
+        fi
+        [ ! -L "$line" ] && continue
+        if identity=$(proc_status_identity "$pid_dir/status" 2>/dev/null); then
+          read -r pid_uid pid_state <<< "$identity"
+          [ "$pid_uid" != "$current_uid" ] && continue
+          [ "$pid_state" = Z ] && continue
+        elif [ ! -d "$pid_dir" ]; then
+          continue
+        fi
+        return 2
+      done <<< "$output"
+    done
     [ "$scan_verified" -eq 1 ] || return 2
     return 0
   fi
   command -v lsof >/dev/null 2>&1 || return 2
-  canary=$(lsof -a -p "$$" -d cwd -Fn 2>&1) || return 2
-  [ -n "$canary" ] || return 2
-  if output=$(lsof +D "$dir" 2>&1); then
+  output=$(lsof -a -p "$$" -d cwd -Fn 2>&1) || return 2
+  [ -n "$output" ] || return 2
+  if output=$(lsof +D "$dir_phys" 2>&1); then
     status=0
   else
     status=$?
@@ -768,9 +820,9 @@ prepare_project_quarantine() {
   local old_umask mode
   old_umask=$(umask)
   umask 077
-  if ! QUARANTINE_PARENT=$(mktemp -d "$PROJECTS/.fm-project-remove-$NAME.XXXXXX"); then
+  if ! QUARANTINE_PARENT=$(mktemp -d "$PROJECTS_PHYS/.fm-project-remove-$NAME.XXXXXX"); then
     umask "$old_umask"
-    die "refusing: could not create a same-directory project quarantine under $PROJECTS"
+    die "refusing: could not create a same-directory project quarantine under $PROJECTS_PHYS"
   fi
   umask "$old_umask"
   [ -d "$QUARANTINE_PARENT" ] && [ ! -L "$QUARANTINE_PARENT" ] \
@@ -1030,8 +1082,14 @@ git_objects=$(
     | LC_ALL=C sort -k1,1 -u
 ) || die "refusing: cannot inventory Git objects of $TARGET"
 if [ -n "$remotes" ]; then
-  remote_objects=$(git -C "$TARGET" rev-list --objects --remotes 2>/dev/null \
-    | awk '{ print $1 }' \
+  remote_object_walk=$(git -C "$TARGET" rev-list --objects --remotes --missing=print 2>/dev/null) \
+    || die "refusing: cannot inspect remote-tracking object reachability in $TARGET without fetching promised objects"
+  missing_remote_objects=$(printf '%s\n' "$remote_object_walk" | awk '/^\?/ { print substr($1, 2) }') \
+    || die "refusing: cannot classify missing promised objects in $TARGET"
+  [ -z "$missing_remote_objects" ] \
+    || die "refusing: cannot prove remote-tracking object reachability locally because promised objects are missing in $TARGET; --check never fetches them"
+  remote_objects=$(printf '%s\n' "$remote_object_walk" \
+    | awk '$1 !~ /^\?/ { print $1 }' \
     | LC_ALL=C sort -u) \
     || die "refusing: cannot inspect remote-tracking object reachability in $TARGET"
   unlanded_objects=$(LC_ALL=C join -v 1 -1 1 -2 1 \

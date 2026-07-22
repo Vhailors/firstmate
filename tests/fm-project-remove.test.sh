@@ -71,6 +71,10 @@
 #        its preliminary canary
 #   (ap) control inventory is rechecked after every slow deletion-boundary scan
 #   (aq) unreachable blob, tree, and tag objects require exact authority
+#   (ar) inaccessible current-UID proc roots refuse while other-UID roots are
+#        outside the same-user scanner's required coverage
+#   (as) proc targets are compared literally against the physical quarantine
+#   (at) partial-clone reachability never lazily fetches promised objects
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -909,7 +913,8 @@ test_transaction_lock_and_final_inventory_recheck() {
 }
 
 test_handle_scanners_require_enumeration_proof() {
-  local home="$TMP_ROOT/scanner-find" darwin_home="$TMP_ROOT/scanner-lsof" fakebin out code
+  local home="$TMP_ROOT/scanner-find" other_home="$TMP_ROOT/scanner-other-user" \
+    darwin_home="$TMP_ROOT/scanner-lsof" fakebin out code other_pid='' pid uid
   make_home "$home"
   make_landed_clone "$home" alpha
   add_registry "$home" alpha
@@ -917,20 +922,38 @@ test_handle_scanners_require_enumeration_proof() {
   cat > "$fakebin/find" <<'SH'
 #!/usr/bin/env bash
 set -u
-for arg in "$@"; do
-  [ "$arg" != -lname ] || exit 86
-done
+case "${1:-}" in
+  "/proc/$FM_TEST_PROC_PID/fd") exit 86 ;;
+esac
 exec "$FM_REAL_FIND" "$@"
 SH
   chmod +x "$fakebin/find"
 
-  out=$(PATH="$fakebin:$PATH" FM_REAL_FIND="$REAL_FIND" FM_HOME="$home" \
+  out=$(PATH="$fakebin:$PATH" FM_REAL_FIND="$REAL_FIND" FM_TEST_PROC_PID="$$" FM_HOME="$home" \
     "$REMOVE" alpha --confirm alpha 2>&1)
   code=$?
   expect_code 1 "$code" "real proc scanner failure refusal"
   assert_contains "$out" "no supported way to verify" "failed real proc scan was treated as drained"
   assert_present "$home/projects/alpha" "failed real proc scan lost the restored clone"
   assert_grep '- alpha ' "$home/data/projects.md" "failed real proc scan changed the registry"
+
+  for pid in /proc/[0-9]*; do
+    uid=$(stat -c '%u' "$pid" 2>/dev/null) || continue
+    if [ "$uid" != "$(id -u)" ]; then
+      other_pid=${pid#/proc/}
+      break
+    fi
+  done
+  if [ -n "$other_pid" ]; then
+    make_home "$other_home"
+    make_landed_clone "$other_home" alpha
+    add_registry "$other_home" alpha
+    out=$(PATH="$fakebin:$PATH" FM_REAL_FIND="$REAL_FIND" FM_TEST_PROC_PID="$other_pid" \
+      FM_HOME="$other_home" "$REMOVE" alpha --confirm alpha 2>&1)
+    code=$?
+    expect_code 0 "$code" "other-user proc scanner tolerance"
+    assert_absent "$other_home/projects/alpha" "an inaccessible other-user proc root blocked removal"
+  fi
 
   make_home "$darwin_home"
   make_landed_clone "$darwin_home" alpha
@@ -966,6 +989,73 @@ SH
   assert_present "$darwin_home/projects/alpha" "erroring real lsof scan lost the restored clone"
   assert_grep '- alpha ' "$darwin_home/data/projects.md" "erroring real lsof scan changed the registry"
   pass "handle scanners require successful enumeration proof"
+}
+
+test_handle_scan_uses_physical_literal_paths() {
+  local physical="$TMP_ROOT/physical-[literal]?*" home="$TMP_ROOT/symlinked-handle-home" out code
+  make_home "$physical"
+  make_landed_clone "$physical" alpha
+  add_registry "$physical" alpha
+  ln -s "$physical" "$home"
+
+  exec 9< "$physical/projects/alpha/README.md"
+  out=$(run_remove "$home" alpha --confirm alpha)
+  code=$?
+  exec 9<&-
+  expect_code 1 "$code" "physical literal open-handle refusal"
+  assert_contains "$out" "open handle" "physical proc target with pattern characters was not matched literally"
+  assert_present "$physical/projects/alpha/README.md" "physical literal handle refusal lost the clone"
+  assert_grep '- alpha ' "$physical/data/projects.md" "physical literal handle refusal changed the registry"
+
+  out=$(run_remove "$home" alpha --confirm alpha)
+  code=$?
+  expect_code 0 "$code" "removal after physical literal handle release"
+  assert_absent "$physical/projects/alpha" "clone survived after physical literal handle release"
+  pass "handle scans use physical quarantine paths and literal containment"
+}
+
+test_partial_clone_reachability_refuses_without_lazy_fetch() {
+  local home="$TMP_ROOT/partial-clone" fakebin marker out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-partial-clone-git")
+  marker="$home/lazy-fetch-attempted"
+  cat > "$fakebin/git" <<'SH'
+#!/usr/bin/env bash
+set -u
+args=" $*"
+case "$args" in
+  *" rev-list --objects --remotes"*)
+    if [ "${GIT_NO_LAZY_FETCH:-}" != 1 ]; then
+      : > "$FM_TEST_FETCH_MARKER"
+      exit 86
+    fi
+    case "$args" in
+      *" --missing=print"*)
+        printf '?1111111111111111111111111111111111111111\n'
+        exit 0
+        ;;
+    esac
+    : > "$FM_TEST_FETCH_MARKER"
+    exit 86
+    ;;
+esac
+exec "$FM_REAL_GIT" "$@"
+SH
+  chmod +x "$fakebin/git"
+
+  out=$(PATH="$fakebin:$PATH" FM_REAL_GIT="$REAL_GIT" FM_TEST_FETCH_MARKER="$marker" \
+    FM_HOME="$home" "$REMOVE" alpha --check 2>&1)
+  code=$?
+  expect_code 1 "$code" "missing promised object refusal"
+  assert_contains "$out" "cannot prove remote-tracking object reachability locally" \
+    "missing promised objects did not refuse local reachability classification"
+  assert_contains "$out" "--check never fetches" "partial-clone refusal omitted the read-only boundary"
+  assert_absent "$marker" "partial-clone inventory attempted lazy fetching"
+  assert_present "$home/projects/alpha" "partial-clone check removed the clone"
+  assert_grep '- alpha ' "$home/data/projects.md" "partial-clone check changed the registry"
+  pass "partial-clone reachability refuses missing objects without lazy fetches"
 }
 
 test_root_git_payload_rechecked_after_handle_drain() {
@@ -1016,15 +1106,14 @@ test_control_inventory_rechecked_immediately_before_delete() {
   cat > "$fakebin/find" <<'SH'
 #!/usr/bin/env bash
 set -u
-for arg in "$@"; do
-  [ "$arg" != -lname ] || {
+case "${1:-}" in
+  /proc/[0-9]*/fd)
     if [ ! -e "$FM_TEST_RACE_MARKER" ]; then
       printf 'project=%s\n' "$FM_TEST_TARGET" > "$FM_TEST_STATE/raced.meta"
       : > "$FM_TEST_RACE_MARKER"
     fi
-    break
-  }
-done
+    ;;
+esac
 exec "$FM_REAL_FIND" "$@"
 SH
   chmod +x "$fakebin/find"
@@ -1536,6 +1625,8 @@ test_invalid_git_named_entries_stay_discardable
 test_external_nested_repository_is_discardable_inventory
 test_open_handle_refuses_at_deletion_boundary
 test_handle_scanners_require_enumeration_proof
+test_handle_scan_uses_physical_literal_paths
+test_partial_clone_reachability_refuses_without_lazy_fetch
 test_root_git_payload_rechecked_after_handle_drain
 test_control_inventory_rechecked_immediately_before_delete
 test_dotted_project_names_are_valid
