@@ -50,6 +50,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 - Changes to harness adapters (detection in `bin/fm-harness.sh`, launch and hook mechanics in `bin/fm-spawn.sh`, busy signatures in `bin/fm-watch.sh` and `bin/fm-tmux-lib.sh`, cleanup in `bin/fm-teardown.sh`, and facts in `.agents/skills/harness-adapters/SKILL.md`) must be verified empirically against the real harness, never written from documentation alone.
 - Changes to runtime session backends (`bin/fm-backend.sh`, `bin/backends/`, and the scripts that dispatch through them) keep current setup and limits in the relevant backend guide and active empirical evidence in [`docs/verification/runtime-backends.md`](docs/verification/runtime-backends.md).
 - [`docs/documentation-audiences.md`](docs/documentation-audiences.md) and its machine-consumed inventory own prose classification; run `bin/fm-doc-audience-check.sh` after documentation changes.
+- Local workflow customizations carried on top of `upstream/main` follow [`docs/adr/0001-upstream-compatible-local-customization.md`](docs/adr/0001-upstream-compatible-local-customization.md), which owns the customization shape, the refresh-classify-rebase procedure, and the current customization inventory.
 - In Markdown, put each full sentence on its own line.
 - `README.md` stays a concise overview plus pointers: it never carries a wall of inline detail.
   Route detail to the most specific `docs/` file (architecture, configuration, or a backend guide) and link to it instead.
