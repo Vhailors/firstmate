@@ -75,6 +75,11 @@
 #        outside the same-user scanner's required coverage
 #   (as) proc targets are compared literally against the physical quarantine
 #   (at) partial-clone reachability never lazily fetches promised objects
+#   (au) clone-root mountpoints and cross-device quarantine renames refuse
+#   (av) task metadata must be ordinary non-symlink files whose bytes are hashed
+#   (aw) the root .git marker must be a real non-symlink directory
+#   (ax) the valid project name registry cannot collide with the shared lock
+#   (ay) only validated internal markers classify quarantine-like siblings
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -87,6 +92,7 @@ REAL_FIND=$(command -v find)
 REAL_MV=$(command -v mv)
 REAL_MKTEMP=$(command -v mktemp)
 REAL_STAT=$(command -v stat)
+REAL_CAT=$(command -v cat)
 TMP_ROOT=$(fm_test_tmproot fm-project-remove-tests)
 
 make_home() {
@@ -104,6 +110,14 @@ make_landed_clone() {
 
 add_registry() {
   printf -- '- %s - fixture project (added 2026-07-21)\n' "$2" >> "$1/data/projects.md"
+}
+
+write_quarantine_marker() {
+  local quarantine=$1 name=$2
+  chmod 700 "$quarantine"
+  printf 'firstmate-project-removal-quarantine-v1:%s\n' "$name" \
+    > "$quarantine/.fm-project-remove-quarantine"
+  chmod 600 "$quarantine/.fm-project-remove-quarantine"
 }
 
 run_remove() {
@@ -581,6 +595,33 @@ test_live_task_metadata_refuses_structurally() {
   pass "live task metadata refuses structurally and is never discardable"
 }
 
+test_task_metadata_requires_ordinary_files() {
+  local home="$TMP_ROOT/task-meta-types" external out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  external="$home/external.meta"
+  printf 'project=%s\n' "$home/projects/alpha" > "$external"
+  ln -s "$external" "$home/state/symlink.meta"
+
+  out=$(run_remove "$home" alpha --check)
+  code=$?
+  expect_code 1 "$code" "symlink task metadata refusal"
+  assert_contains "$out" "ordinary non-symlink file" "symlink task metadata was accepted"
+  assert_present "$home/projects/alpha" "symlink task metadata refusal removed the clone"
+  [ "$(cat "$external")" = "project=$home/projects/alpha" ] \
+    || fail "symlink task metadata refusal changed its external target"
+
+  rm "$home/state/symlink.meta"
+  mkfifo "$home/state/fifo.meta"
+  out=$(run_remove "$home" alpha --check)
+  code=$?
+  expect_code 1 "$code" "special task metadata refusal"
+  assert_contains "$out" "ordinary non-symlink file" "special task metadata was accepted"
+  assert_present "$home/projects/alpha" "special task metadata refusal removed the clone"
+  pass "task metadata parsing accepts only ordinary non-symlink files"
+}
+
 test_open_backlog_items_refuse() {
   local home="$TMP_ROOT/backlog" out code
   make_home "$home"
@@ -728,6 +769,57 @@ SH
   pass "nested mountpoints refuse before quarantine or deletion"
 }
 
+test_root_mountpoint_and_cross_device_quarantine_refuse() {
+  local home="$TMP_ROOT/root-mount" device_home="$TMP_ROOT/quarantine-device" fakebin out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-root-mountinfo")
+  cat > "$fakebin/cat" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = /proc/self/mountinfo ]; then
+  printf '100 99 0:1 / %s rw - ext4 /dev/fake rw\n' "$FM_TEST_MOUNT_ROOT"
+  exit 0
+fi
+exec "$FM_REAL_CAT" "$@"
+SH
+  chmod +x "$fakebin/cat"
+
+  out=$(PATH="$fakebin:$PATH" FM_REAL_CAT="$REAL_CAT" FM_TEST_MOUNT_ROOT="$home/projects/alpha" \
+    FM_HOME="$home" "$REMOVE" alpha --check 2>&1)
+  code=$?
+  expect_code 1 "$code" "clone-root mountpoint refusal"
+  assert_contains "$out" "mountpoint exists at the clone root" "clone-root mountpoint was not rejected"
+  assert_present "$home/projects/alpha" "clone-root mountpoint refusal removed the clone"
+  assert_grep '- alpha ' "$home/data/projects.md" "clone-root mountpoint refusal changed the registry"
+
+  make_home "$device_home"
+  make_landed_clone "$device_home" alpha
+  add_registry "$device_home" alpha
+  fakebin=$(fm_fakebin "$TMP_ROOT/fake-quarantine-device")
+  cat > "$fakebin/stat" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = -c ] && [ "${2:-}" = %d ]; then
+  case "${3:-}" in
+    "$FM_TEST_PROJECTS"/.fm-project-remove-alpha.*) printf '999999999\n'; exit 0 ;;
+  esac
+fi
+exec "$FM_REAL_STAT" "$@"
+SH
+  chmod +x "$fakebin/stat"
+
+  out=$(PATH="$fakebin:$PATH" FM_REAL_STAT="$REAL_STAT" FM_TEST_PROJECTS="$device_home/projects" \
+    FM_HOME="$device_home" "$REMOVE" alpha --confirm alpha 2>&1)
+  code=$?
+  expect_code 1 "$code" "cross-device quarantine refusal"
+  assert_contains "$out" "same filesystem" "cross-device quarantine was not rejected"
+  assert_present "$device_home/projects/alpha" "cross-device quarantine refusal removed the clone"
+  assert_grep '- alpha ' "$device_home/data/projects.md" "cross-device quarantine refusal changed the registry"
+  pass "clone-root mounts and cross-device quarantine renames refuse before target mutation"
+}
+
 test_root_override_cannot_hide_running_checkout() {
   local home="$TMP_ROOT/root-identity" fake_root embedded out code
   make_home "$home"
@@ -781,8 +873,8 @@ test_transaction_lock_and_final_inventory_recheck() {
   make_home "$home"
   make_landed_clone "$home" alpha
   add_registry "$home" alpha
-  lock="$home/state/.project-remove-alpha.lock"
-  owner="$home/state/.project-remove-alpha.lock.owner.fixture"
+  lock="$home/state/.project-remove-project-alpha.lock"
+  owner="$home/state/.project-remove-project-alpha.lock.owner.fixture"
   mkdir "$owner"
   printf '%s\n' "$$" > "$owner/pid"
   ln -s "$owner" "$lock"
@@ -912,6 +1004,21 @@ test_transaction_lock_and_final_inventory_recheck() {
   pass "project removal holds a lock and rechecks inventory before mutation"
 }
 
+test_registry_project_name_has_distinct_lock_namespace() {
+  local home="$TMP_ROOT/registry-project-lock" out code
+  make_home "$home"
+  add_registry "$home" registry
+
+  out=$(run_remove "$home" registry --confirm registry)
+  code=$?
+  expect_code 0 "$code" "registry-named stale repair"
+  assert_contains "$out" "repaired stale registry" "registry-named project lock collided with the shared lock"
+  assert_no_grep '- registry ' "$home/data/projects.md" "registry-named stale repair left its registry line"
+  assert_absent "$home/state/.project-remove-project-registry.lock" "registry-named project lock survived repair"
+  assert_absent "$home/state/.project-remove-registry.lock" "shared registry lock survived repair"
+  pass "the valid project name registry has a collision-free project lock"
+}
+
 test_handle_scanners_require_enumeration_proof() {
   local home="$TMP_ROOT/scanner-find" other_home="$TMP_ROOT/scanner-other-user" \
     darwin_home="$TMP_ROOT/scanner-lsof" fakebin out code other_pid='' pid uid
@@ -975,6 +1082,7 @@ if [ "${1:-}" = -f ]; then
   case "${2:-}" in
     %Lp) shift 2; exec "$FM_REAL_STAT" -c %a "$@" ;;
     %d) shift 2; exec "$FM_REAL_STAT" -c %d "$@" ;;
+    %l) shift 2; exec "$FM_REAL_STAT" -c %h "$@" ;;
   esac
 fi
 exec "$FM_REAL_STAT" "$@"
@@ -1228,6 +1336,7 @@ test_interrupted_quarantine_never_stale_repairs() {
   add_registry "$home" beta
   q="$home/projects/.fm-project-remove-alpha.crashed"
   mkdir -p "$q/clone"
+  write_quarantine_marker "$q" alpha
   printf 'unlanded bytes\n' > "$q/clone/precious.txt"
 
   out=$(run_remove "$home" alpha --check)
@@ -1262,17 +1371,47 @@ test_interrupted_quarantine_never_stale_repairs() {
   # Empty residue (a crash between quarantine creation and the rename)
   # refuses with its own message and never repairs the registry.
   mkdir "$home/projects/.fm-project-remove-beta.residue"
+  write_quarantine_marker "$home/projects/.fm-project-remove-beta.residue" beta
   out=$(run_remove "$home" beta --confirm beta)
   code=$?
   expect_code 1 "$code" "repair with empty quarantine residue"
   assert_contains "$out" "empty residue" "empty quarantine residue was not distinguished"
   assert_grep '- beta ' "$home/data/projects.md" "empty residue still repaired the registry"
+  rm "$home/projects/.fm-project-remove-beta.residue/.fm-project-remove-quarantine"
   rmdir "$home/projects/.fm-project-remove-beta.residue"
   out=$(run_remove "$home" beta --confirm beta)
   code=$?
   expect_code 0 "$code" "stale repair after residue cleanup"
   assert_contains "$out" "repaired stale registry" "stale repair did not run after residue cleanup"
   pass "an interrupted quarantine refuses loudly and never becomes a stale-registry repair"
+}
+
+test_quarantine_namespace_requires_validated_marker() {
+  local home="$TMP_ROOT/quarantine-namespace" sibling external out code
+  make_home "$home"
+  add_registry "$home" alpha
+  sibling="$home/projects/.fm-project-remove-alpha.crashed"
+  make_landed_clone "$home" .fm-project-remove-alpha.crashed
+
+  out=$(run_remove "$home" alpha --confirm alpha)
+  code=$?
+  expect_code 0 "$code" "quarantine-like project-name overlap"
+  assert_contains "$out" "repaired stale registry" "quarantine-like project was misclassified as residue"
+  assert_present "$sibling/.git" "stale repair touched the quarantine-like project"
+
+  add_registry "$home" beta
+  mkdir "$home/projects/.fm-project-remove-beta.lookalike"
+  external="$home/external-marker"
+  printf 'external marker\n' > "$external"
+  ln "$external" "$home/projects/.fm-project-remove-beta.lookalike/.fm-project-remove-quarantine"
+  out=$(run_remove "$home" beta --confirm beta)
+  code=$?
+  expect_code 0 "$code" "hardlinked quarantine-marker lookalike"
+  assert_contains "$out" "repaired stale registry" "hardlinked marker was accepted as internal quarantine evidence"
+  [ "$(cat "$external")" = 'external marker' ] || fail "hardlinked marker target was changed"
+  assert_present "$home/projects/.fm-project-remove-beta.lookalike/.fm-project-remove-quarantine" \
+    "hardlinked marker lookalike was removed"
+  pass "only a validated single-link internal marker claims the quarantine namespace"
 }
 
 test_invalid_git_named_entries_stay_discardable() {
@@ -1497,6 +1636,24 @@ test_gitfile_clone_refuses() {
   pass "a clone that is itself a linked worktree of another repository refuses"
 }
 
+test_root_git_symlink_refuses() {
+  local home="$TMP_ROOT/root-git-symlink" out code
+  make_home "$home"
+  make_landed_clone "$home" alpha
+  add_registry "$home" alpha
+  mv "$home/projects/alpha/.git" "$home/projects/alpha/.git-real"
+  ln -s .git-real "$home/projects/alpha/.git"
+
+  out=$(run_remove "$home" alpha --check)
+  code=$?
+  expect_code 1 "$code" "root .git symlink refusal"
+  assert_contains "$out" ".git is a symlink" "root .git symlink was not rejected explicitly"
+  assert_present "$home/projects/alpha/.git" "root .git symlink refusal removed the marker"
+  assert_present "$home/projects/alpha/.git-real/HEAD" "root .git symlink refusal touched the repository"
+  assert_grep '- alpha ' "$home/data/projects.md" "root .git symlink refusal changed the registry"
+  pass "the root .git marker must be a real non-symlink directory"
+}
+
 test_partial_failure_leaves_registry_untouched() {
   local home="$TMP_ROOT/partial" out code preserved
   if [ "$(id -u)" -eq 0 ]; then
@@ -1601,12 +1758,14 @@ test_remote_repository_local_refs_and_objects_refuse
 test_unreachable_noncommit_objects_require_authority
 test_no_remote_repository_refuses_then_discards
 test_live_task_metadata_refuses_structurally
+test_task_metadata_requires_ordinary_files
 test_open_backlog_items_refuse
 test_secondmate_registered_clone_refuses
 test_linked_worktree_refuses_then_prunes_stale
 test_traversal_and_bad_names_rejected
 test_symlinked_clone_and_projects_dir_refuse
 test_gitfile_clone_refuses
+test_root_git_symlink_refuses
 test_partial_failure_leaves_registry_untouched
 test_stale_registry_repair_is_idempotent_and_loud
 test_unregistered_clone_removed_with_notice
@@ -1614,13 +1773,16 @@ test_gate_agent_is_refused
 test_active_home_roots_cannot_be_overridden
 test_symlinked_control_roots_stay_inside_active_home
 test_nested_mountpoint_refuses_before_removal
+test_root_mountpoint_and_cross_device_quarantine_refuse
 test_root_override_cannot_hide_running_checkout
 test_state_enumeration_failure_refuses_closed
 test_transaction_lock_and_final_inventory_recheck
+test_registry_project_name_has_distinct_lock_namespace
 test_git_inspection_failures_refuse_closed
 test_sha256_is_required_and_full_length
 test_registry_rewrite_uses_secure_temp
 test_interrupted_quarantine_never_stale_repairs
+test_quarantine_namespace_requires_validated_marker
 test_invalid_git_named_entries_stay_discardable
 test_external_nested_repository_is_discardable_inventory
 test_open_handle_refuses_at_deletion_boundary

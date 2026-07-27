@@ -18,22 +18,25 @@
 #   - The projects directory and the clone must be real directories, not
 #     symlinks, and the clone's physical path must resolve to exactly
 #     <projects-phys>/<name>; a symlinked or relocated clone refuses.
-#   - The clone must be a standalone git clone: a .git DIRECTORY whose git
-#     common dir resolves inside the clone. A gitfile (the clone is itself a
-#     linked worktree of another repository) refuses, because raw removal would
-#     corrupt that other repository's worktree registry.
+#   - The clone must be a standalone git clone: a real non-symlink .git
+#     DIRECTORY whose git common dir resolves inside the clone. A gitfile (the
+#     clone is itself a linked worktree of another repository) refuses, because
+#     raw removal would corrupt that other repository's worktree registry.
 #   - The clone may never be, or contain, this firstmate checkout or the
 #     active FM_HOME.
-#   - A nested mountpoint under the clone refuses before quarantine and is
-#     rechecked at the deletion boundary; deletion is filesystem-bounded.
+#   - A mountpoint at or under the clone refuses before quarantine and is
+#     rechecked at the deletion boundary. The target and restrictive
+#     quarantine parent must still have the same device immediately before the
+#     rename, so quarantine is proven atomic and deletion is filesystem-bounded.
 #
 # Blockers - the transaction refuses while any exist.
 # STRUCTURAL blockers can never be covered by discard authority; resolve them
 # through their own owner paths first (bin/fm-teardown.sh for tasks, the
 # backlog backend for queued items, secondmate-provisioning for secondmate
 # clones):
-#   - live task metadata: any state/<id>.meta whose project=, worktree=, or
-#     home= resolves at or under the clone
+#   - live task metadata: every state/<id>.meta must be an ordinary non-symlink
+#     file whose exact parsed bytes are included in the control inventory; any
+#     project=, worktree=, or home= value resolving at or under the clone blocks
 #   - open backlog items tagged "(repo: <name>)" in data/backlog.md
 #   - a data/secondmates.md line whose projects list names <name>, or whose
 #     home resolves under the clone
@@ -70,8 +73,8 @@
 # Transaction order (mutations happen strictly in this order, each gated on
 # the previous step):
 #   1. every check above passes, or every blocker is discardable and exactly
-#      covered by the presented discard-authority token; a per-project
-#      transaction lock and a shared registry lock are acquired and the
+#      covered by the presented discard-authority token; a transaction lock in
+#      a project-only namespace and a shared registry lock are acquired and the
 #      complete risk inventory is rechecked unchanged immediately before
 #      mutation
 #   2. `git worktree prune` inside the clone (supported owner tool, safe:
@@ -97,13 +100,15 @@
 #
 # Idempotent stale-registry repair: when data/projects.md still lists <name>
 # but no clone exists, the same command performs only steps 5-6 and reports the
-# repair. A leftover removal quarantine for <name> under projects/ means an
-# earlier transaction was interrupted, NOT that the registry is stale: every
-# mode refuses loudly before classifying the clone as absent, names the
-# quarantine, and explains the restore step, so preserved bytes are never
-# orphaned by a registry repair. When neither a clone, nor a registry entry,
-# nor a leftover quarantine exists, it fails loudly instead of reporting
-# success for a possible typo.
+# repair. A marked removal quarantine for <name> under projects/ means an
+# earlier transaction was interrupted, NOT that the registry is stale. Only a
+# restrictive directory with the exact single-link internal marker is a
+# quarantine, so a valid project whose name overlaps the private prefix is not
+# misclassified. Every mode refuses loudly before classifying a marked clone
+# as absent, names the quarantine, and explains the restore step, so preserved
+# bytes are never orphaned by a registry repair. When neither a clone, nor a
+# registry entry, nor a marked leftover quarantine exists, it fails loudly
+# instead of reporting success for a possible typo.
 #
 # bin/fm-teardown.sh remains the single owner of the task-worktree landed-work
 # test; this script owns only the clone-retirement risk inventory above.
@@ -306,6 +311,14 @@ path_device() {
   fi
 }
 
+path_links() {
+  if [ "$(uname)" = Darwin ]; then
+    stat -f '%l' "$1" 2>/dev/null
+  else
+    stat -c '%h' "$1" 2>/dev/null
+  fi
+}
+
 hash_inventory_entries() {
   local root=$1 rel full path_hash content_hash link_target mode
   while IFS= read -r -d '' rel; do
@@ -371,7 +384,7 @@ full_tree_inventory_hash() {
 }
 
 nested_mount_records() {
-  local repo=$1 root_device path device mountpoint decoded
+  local repo=$1 root_device path device mountpoint decoded mountinfo
   root_device=$(path_device "$repo") || return 1
   find "$repo" -xdev -mindepth 1 -print >/dev/null 2>&1 || return 1
   while IFS= read -r -d '' path; do
@@ -380,13 +393,17 @@ nested_mount_records() {
   done < <(find "$repo" -xdev -mindepth 1 -print0 2>/dev/null)
   if [ "$(uname)" = Linux ]; then
     [ -r /proc/self/mountinfo ] || return 1
+    mountinfo=$(cat /proc/self/mountinfo) || return 1
     while IFS=' ' read -r _ _ _ _ mountpoint _; do
       decoded=$(printf '%b' "$mountpoint") || return 1
-      [ "$decoded" != "$repo" ] || continue
+      if [ "$decoded" = "$repo" ]; then
+        printf 'root-mountinfo:%s\n' "$decoded"
+        continue
+      fi
       case "$decoded/" in
         "$repo"/*) printf 'mountinfo:%s\n' "$decoded" ;;
       esac
-    done < /proc/self/mountinfo
+    done <<< "$mountinfo"
   fi
 }
 
@@ -412,16 +429,36 @@ optional_path_hash() {
   fi
 }
 
+validate_state_meta_files() {
+  local meta
+  if [ ! -e "$STATE" ] && [ ! -L "$STATE" ]; then
+    return 0
+  fi
+  [ -d "$STATE" ] || return 1
+  find "$STATE" -mindepth 1 -maxdepth 1 -name '*.meta' -print >/dev/null 2>&1 || return 1
+  for meta in "$STATE"/*.meta; do
+    [ -e "$meta" ] || [ -L "$meta" ] || continue
+    [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  done
+}
+
 state_meta_inventory_hash() {
-  local entries_hash
+  local entries_hash meta rel path_hash mode content_hash
   if [ ! -e "$STATE" ] && [ ! -L "$STATE" ]; then
     printf 'absent\n' | fingerprint_hash
     return
   fi
-  [ -d "$STATE" ] || return 1
+  validate_state_meta_files || return 1
   entries_hash=$(
     find "$STATE" -mindepth 1 -maxdepth 1 -name '*.meta' -print0 \
-      | hash_inventory_entries "$STATE" \
+      | while IFS= read -r -d '' meta; do
+          [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+          rel=${meta#"$STATE"/}
+          path_hash=$(printf '%s' "$rel" | fingerprint_hash) || return 1
+          mode=$(path_mode "$meta") || return 1
+          content_hash=$(fingerprint_hash < "$meta") || return 1
+          printf 'file:%s:%s:%s\n' "$mode" "$path_hash" "$content_hash"
+        done \
       | LC_ALL=C sort \
       | fingerprint_hash
   ) || return 1
@@ -766,6 +803,44 @@ REGISTRY_TMP=
 QUARANTINE_PARENT=
 QUARANTINE=
 QUARANTINE_PRESERVE=0
+QUARANTINE_MARKER_NAME=.fm-project-remove-quarantine
+
+quarantine_parent_valid() {
+  local parent=$1 parent_phys mode
+  [ -d "$parent" ] && [ ! -L "$parent" ] || return 1
+  parent_phys=$(canonical_existing_dir "$parent") || return 1
+  [ "$parent_phys" = "$PROJECTS_CONFIG_PHYS/$(basename "$parent")" ] || return 1
+  case "$(basename "$parent")" in
+    ".fm-project-remove-$NAME."*) : ;;
+    *) return 1 ;;
+  esac
+  mode=$(path_mode "$parent") || return 1
+  [ "$mode" = 700 ]
+}
+
+quarantine_marker_valid() {
+  local parent=$1 marker mode links
+  marker="$parent/$QUARANTINE_MARKER_NAME"
+  quarantine_parent_valid "$parent" || return 1
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  mode=$(path_mode "$marker") || return 1
+  links=$(path_links "$marker") || return 1
+  [ "$mode" = 600 ] && [ "$links" -eq 1 ] || return 1
+  cmp -s "$marker" <(printf 'firstmate-project-removal-quarantine-v1:%s\n' "$NAME")
+}
+
+cleanup_quarantine_parent() {
+  local parent=$1 marker
+  marker="$parent/$QUARANTINE_MARKER_NAME"
+  quarantine_parent_valid "$parent" || return 1
+  [ ! -e "$parent/clone" ] && [ ! -L "$parent/clone" ] || return 1
+  if [ -e "$marker" ] || [ -L "$marker" ]; then
+    quarantine_marker_valid "$parent" || return 1
+    rm -- "$marker" || return 1
+    [ ! -e "$marker" ] && [ ! -L "$marker" ] || return 1
+  fi
+  rmdir "$parent"
+}
 
 # shellcheck disable=SC2329
 release_project_lock() {
@@ -774,7 +849,7 @@ release_project_lock() {
     REGISTRY_TMP=
   fi
   if [ -n "$QUARANTINE_PARENT" ] && [ "$QUARANTINE_PRESERVE" -eq 0 ]; then
-    rmdir "$QUARANTINE_PARENT" 2>/dev/null || true
+    cleanup_quarantine_parent "$QUARANTINE_PARENT" 2>/dev/null || true
   fi
   if [ "$REGISTRY_REMOVE_LOCK_HELD" -eq 1 ]; then
     fm_lock_release "$REGISTRY_REMOVE_LOCK"
@@ -791,7 +866,7 @@ acquire_project_lock() {
     || die "refusing: state directory $STATE must be readable and writable to lock project removal"
   # shellcheck source=bin/fm-wake-lib.sh
   . "$SCRIPT_DIR/fm-wake-lib.sh"
-  PROJECT_REMOVE_LOCK="$STATE/.project-remove-$NAME.lock"
+  PROJECT_REMOVE_LOCK="$STATE/.project-remove-project-$NAME.lock"
   if ! fm_lock_try_acquire "$PROJECT_REMOVE_LOCK"; then
     die "refusing: another project-removal transaction holds $PROJECT_REMOVE_LOCK"
   fi
@@ -819,7 +894,7 @@ verify_project_lock() {
 }
 
 prepare_project_quarantine() {
-  local old_umask mode
+  local old_umask mode marker
   old_umask=$(umask)
   umask 077
   if ! QUARANTINE_PARENT=$(mktemp -d "$PROJECTS_PHYS/.fm-project-remove-$NAME.XXXXXX"); then
@@ -833,6 +908,14 @@ prepare_project_quarantine() {
     || die "refusing: could not restrict project quarantine $QUARANTINE_PARENT"
   mode=$(path_mode "$QUARANTINE_PARENT") || die "refusing: cannot inspect project quarantine $QUARANTINE_PARENT"
   [ "$mode" = 700 ] || die "refusing: project quarantine $QUARANTINE_PARENT has unsafe mode $mode"
+  marker="$QUARANTINE_PARENT/$QUARANTINE_MARKER_NAME"
+  if ! (set -o noclobber; umask 077; printf 'firstmate-project-removal-quarantine-v1:%s\n' "$NAME" > "$marker"); then
+    die "refusing: could not create the internal project-quarantine marker in $QUARANTINE_PARENT"
+  fi
+  chmod 600 "$marker" \
+    || die "refusing: could not restrict the internal project-quarantine marker $marker"
+  quarantine_marker_valid "$QUARANTINE_PARENT" \
+    || die "refusing: project-quarantine marker validation failed in $QUARANTINE_PARENT"
   QUARANTINE="$QUARANTINE_PARENT/clone"
 }
 
@@ -840,10 +923,13 @@ refuse_quarantined_change() {
   local reason=$1
   if [ ! -e "$TARGET" ] && [ ! -L "$TARGET" ] && [ -d "$QUARANTINE" ] && [ ! -L "$QUARANTINE" ]; then
     if mv "$QUARANTINE" "$TARGET"; then
-      rmdir "$QUARANTINE_PARENT" 2>/dev/null || true
-      QUARANTINE=
-      QUARANTINE_PARENT=
-      die "$reason; the quarantined clone was restored to $TARGET"
+      if cleanup_quarantine_parent "$QUARANTINE_PARENT" 2>/dev/null; then
+        QUARANTINE=
+        QUARANTINE_PARENT=
+        die "$reason; the quarantined clone was restored to $TARGET"
+      fi
+      QUARANTINE_PRESERVE=1
+      die "$reason; the quarantined clone was restored to $TARGET, but marked quarantine residue remains at $QUARANTINE_PARENT"
     fi
   fi
   QUARANTINE_PRESERVE=1
@@ -902,21 +988,23 @@ reg_present=0
 registry_has_entry && reg_present=1
 
 # An earlier removal of this project interrupted between quarantine and
-# deletion leaves preserved clone bytes under projects/.fm-project-remove-
-# <name>.*; that is recoverable work, never a stale registry. Refuse in every
-# mode before any branch below can classify the clone as absent.
+# deletion leaves preserved clone bytes in a marked directory under
+# projects/.fm-project-remove-<name>.*; that is recoverable work, never a stale
+# registry. A matching sibling without the exact internal marker may be a
+# legitimate project name and does not claim the quarantine namespace.
 if [ -d "$PROJECTS" ]; then
-  leftover_quarantines=$(
-    find "$PROJECTS" -mindepth 1 -maxdepth 1 -name ".fm-project-remove-$NAME.*" -print \
-      | LC_ALL=C sort
-  ) || die "refusing: cannot scan $PROJECTS for interrupted-removal quarantines of '$NAME'"
-  if [ -n "$leftover_quarantines" ]; then
-    leftover_quarantine=${leftover_quarantines%%$'\n'*}
-    if [ -d "$leftover_quarantine" ] && [ ! -L "$leftover_quarantine" ]; then
-      leftover_probe=$(find "$leftover_quarantine" -mindepth 1 -print -quit 2>/dev/null || printf 'unreadable')
-    else
-      leftover_probe=non-directory
+  find "$PROJECTS" -mindepth 1 -maxdepth 1 -name ".fm-project-remove-$NAME.*" -print >/dev/null 2>&1 \
+    || die "refusing: cannot scan $PROJECTS for interrupted-removal quarantines of '$NAME'"
+  leftover_quarantine=
+  while IFS= read -r -d '' quarantine_candidate; do
+    if quarantine_marker_valid "$quarantine_candidate"; then
+      leftover_quarantine=$quarantine_candidate
+      break
     fi
+  done < <(find "$PROJECTS" -mindepth 1 -maxdepth 1 -name ".fm-project-remove-$NAME.*" -print0 2>/dev/null)
+  if [ -n "$leftover_quarantine" ]; then
+    leftover_probe=$(find "$leftover_quarantine" -mindepth 1 \
+      ! -name "$QUARANTINE_MARKER_NAME" -print -quit 2>/dev/null || printf 'unreadable')
     if [ -z "$leftover_probe" ]; then
       die "refusing: leftover removal quarantine $leftover_quarantine from an interrupted removal of '$NAME' is empty residue; inspect and remove that directory, then re-run"
     fi
@@ -960,8 +1048,12 @@ TARGET=$(canonical_existing_dir "$CLONE") \
 [ "$TARGET" != / ] || die "refusing: resolved target is the filesystem root"
 nested_mounts=$(nested_mount_records "$TARGET") \
   || die "refusing: cannot verify that $TARGET contains no nested mountpoints"
-[ -z "$nested_mounts" ] \
-  || die "refusing: nested mountpoint exists under $TARGET: ${nested_mounts%%$'\n'*}"
+if [ -n "$nested_mounts" ]; then
+  case "${nested_mounts%%$'\n'*}" in
+    root-mountinfo:*) die "refusing: mountpoint exists at the clone root $TARGET" ;;
+    *) die "refusing: nested mountpoint exists under $TARGET: ${nested_mounts%%$'\n'*}" ;;
+  esac
+fi
 
 ACTUAL_FM_ROOT_PHYS=$(canonical_existing_dir "$ACTUAL_FM_ROOT") \
   || die "cannot resolve the running firstmate checkout $ACTUAL_FM_ROOT"
@@ -976,10 +1068,13 @@ case "$FM_HOME_PHYS/" in
   "$TARGET"/*) die "refusing: the active FM_HOME ($FM_HOME_PHYS) is at or under the removal target" ;;
 esac
 
-[ -e "$TARGET/.git" ] \
-  || die "refusing: $TARGET has no .git, so this transaction cannot verify it as a managed clone and will not remove it"
-[ ! -f "$TARGET/.git" ] \
-  || die "refusing: $TARGET/.git is a gitfile - the clone is itself a linked worktree of another repository; removing it here would corrupt that repository's worktree registry"
+[ ! -L "$TARGET/.git" ] \
+  || die "refusing: $TARGET/.git is a symlink; a removable standalone clone requires a real non-symlink .git directory"
+if [ -f "$TARGET/.git" ]; then
+  die "refusing: $TARGET/.git is a gitfile - the clone is itself a linked worktree of another repository; removing it here would corrupt that repository's worktree registry"
+fi
+[ -d "$TARGET/.git" ] \
+  || die "refusing: $TARGET has no ordinary .git directory, so this transaction cannot verify it as a managed clone and will not remove it"
 common=$(git -C "$TARGET" rev-parse --git-common-dir 2>/dev/null) \
   || die "refusing: git cannot read $TARGET; will not remove what it cannot verify"
 case "$common" in
@@ -992,6 +1087,8 @@ case "$common/" in
   *) die "refusing: the git common dir of $TARGET resolves to $common, outside the clone; this is not a standalone clone" ;;
 esac
 
+validate_state_meta_files \
+  || die "refusing: every live task metadata path in $STATE must be an ordinary non-symlink file"
 initial_transaction_snapshot=$(transaction_inventory_hash) \
   || die "refusing: cannot capture the complete project-removal inventory"
 
@@ -1145,7 +1242,9 @@ if [ -e "$STATE" ] || [ -L "$STATE" ]; then
   find "$STATE" -mindepth 1 -maxdepth 1 -name '*.meta' -print >/dev/null 2>&1 \
     || die "refusing: cannot completely enumerate live task metadata in $STATE"
   for meta in "$STATE"/*.meta; do
-    [ -e "$meta" ] || continue
+    [ -e "$meta" ] || [ -L "$meta" ] || continue
+    [ -f "$meta" ] && [ ! -L "$meta" ] \
+      || die "refusing: live task metadata $meta is not an ordinary non-symlink file"
     task_id=$(basename "$meta" .meta)
     for field in project worktree home; do
       [ -r "$meta" ] || die "refusing: cannot read live task metadata $meta"
@@ -1329,13 +1428,20 @@ pre_rename_worktree_count=$(printf '%s\n' "$pre_rename_inventory" | awk '/^workt
   || die "refusing: cannot count deletion-boundary worktrees"
 [ "$pre_rename_worktree_count" -eq 1 ] \
   || die "refusing: a linked worktree appeared at the deletion boundary; clone and registry left untouched"
-pre_rename_mounts=$(nested_mount_records "$TARGET") \
-  || die "refusing: cannot recheck nested mountpoints at the deletion boundary"
-[ -z "$pre_rename_mounts" ] \
-  || die "refusing: a nested mountpoint appeared at the deletion boundary: ${pre_rename_mounts%%$'\n'*}"
 verify_project_lock
 
 prepare_project_quarantine
+pre_rename_mounts=$(nested_mount_records "$TARGET") \
+  || die "refusing: cannot recheck mountpoints immediately before quarantine"
+[ -z "$pre_rename_mounts" ] \
+  || die "refusing: a mountpoint appeared immediately before quarantine: ${pre_rename_mounts%%$'\n'*}"
+pre_rename_target_device=$(path_device "$TARGET") \
+  || die "refusing: cannot inspect the clone device immediately before quarantine"
+pre_rename_quarantine_device=$(path_device "$QUARANTINE_PARENT") \
+  || die "refusing: cannot inspect the quarantine-parent device immediately before quarantine"
+[ "$pre_rename_target_device" = "$pre_rename_quarantine_device" ] \
+  || die "refusing: target and quarantine parent are not on the same filesystem; atomic rename is unproven"
+verify_project_lock
 mv "$TARGET" "$QUARANTINE" \
   || die "refusing: could not atomically move $TARGET into same-directory quarantine; clone and registry left untouched"
 if [ -e "$TARGET" ] || [ -L "$TARGET" ] || [ ! -d "$QUARANTINE" ] || [ -L "$QUARANTINE" ]; then
@@ -1392,8 +1498,8 @@ if [ -e "$QUARANTINE" ] || [ -L "$QUARANTINE" ]; then
 fi
 [ ! -e "$TARGET" ] && [ ! -L "$TARGET" ] \
   || die "removal incomplete: $TARGET reappeared; the registry was left untouched"
-rmdir "$QUARANTINE_PARENT" \
-  || die "removal incomplete: quarantine parent $QUARANTINE_PARENT is not empty; the registry was left untouched"
+cleanup_quarantine_parent "$QUARANTINE_PARENT" \
+  || die "removal incomplete: quarantine parent $QUARANTINE_PARENT did not pass marked cleanup; the registry was left untouched"
 QUARANTINE=
 QUARANTINE_PARENT=
 
