@@ -752,6 +752,36 @@ test_crew_dispatch_active_rules_are_verbose_bootstrap_info() {
   pass "bootstrap surfaces active crew-dispatch rules only as verbose BOOTSTRAP_INFO"
 }
 
+# docs/configuration.md tells the captain to copy docs/examples/crew-dispatch.json
+# into config/crew-dispatch.json, so the shipped example must survive this same
+# validator and still render the captain-authorized pins.
+test_shipped_dispatch_example_is_accepted_and_keeps_its_pins() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/dispatch-shipped-example"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  cp "$ROOT/docs/examples/crew-dispatch.json" "$case_dir/home/config/crew-dispatch.json"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  add_real_jq "$fakebin"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ -z "$out" ] || fail "shipped dispatch example must pass bootstrap validation, got: $out"
+
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_BOOTSTRAP_VERBOSE_FACTS=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" 'security engagement. -> pi/zai/glm-5.2/high' \
+    "shipped example lost the single-profile security hard pin"
+  assert_contains "$out" \
+    'quota-balanced[grok/grok-4.5/high, claude/opus/high, codex/gpt-5.6-sol/high, pi/openai-codex/gpt-5.6-sol/high]' \
+    "shipped example lost the standing implementation profile array"
+  assert_contains "$out" \
+    'crew dispatch default: quota-balanced[codex/gpt-5.6-sol/high, pi/openai-codex/gpt-5.6-sol/high, claude/opus/high, grok/grok-4.5/high]' \
+    "shipped example lost the standing implementation default set"
+  assert_not_contains "$out" 'glm-5.1' "shipped example reintroduced a GLM 5.1 fallback"
+  pass "shipped crew-dispatch example validates and renders the captain-authorized pins"
+}
+
 test_crew_dispatch_validation() {
   local label body expect mode case_dir fakebin out n
   n=0
@@ -822,4 +852,5 @@ test_routine_bootstrap_confirmations_are_silent
 test_routine_bootstrap_contract_runs_under_system_bash
 test_bootstrap_info_is_no_load_and_actionable_lines_trigger
 test_crew_dispatch_active_rules_are_verbose_bootstrap_info
+test_shipped_dispatch_example_is_accepted_and_keeps_its_pins
 test_crew_dispatch_validation

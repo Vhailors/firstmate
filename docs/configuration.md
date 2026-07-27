@@ -234,6 +234,7 @@ The single-object form stays fully backward-compatible, and every profile needs 
 Profile `model` and `effort` fields and rule `why` are optional.
 An omitted model or effort means the selected harness uses its own default for that axis.
 Every profile array is an implicit quota-aware choice.
+`select` is not part of this schema, but an existing home whose rule still carries `select: "quota-balanced"` stays valid and behaves exactly like that implicit choice; any other `select` value is reported as invalid configuration.
 `AGENTS.md` section 4 owns the standing implementation profiles, the security hard pin, and the stop-and-report behavior for unresolved quota; the copyable example below reflects those policies without adding a shell selector.
 If no dispatch rule fits, firstmate resolves `default` through the same object-or-array path before falling back to `config/crew-harness`.
 If a selected profile carries an effort value the chosen harness does not accept, `fm-spawn.sh` records the requested `effort=` in task meta for traceability but omits the launch flag, and bootstrap reports the invalid harness/effort pair as a `CREW_DISPATCH` diagnostic when it is visible in the file.
