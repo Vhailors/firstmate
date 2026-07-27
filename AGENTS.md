@@ -163,7 +163,7 @@ If static `config/crew-harness` or `config/secondmate-harness` names an unverifi
 
 `docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-harness.sh` owns static resolution, and `bin/fm-spawn.sh` owns launch flags and fail-closed validation.
 When dispatch profiles exist, consult them at every crewmate or scout intake and pass the resolved concrete profile required by `fm-spawn`.
-Routing precedence is an explicit per-task captain override, then the best-fit configured rule, then the configured default, then the static crewmate harness.
+Routing precedence is an explicit per-task captain override, then the bug-bounty and security-engagement hard pin below, then the best-fit configured rule, then the configured default, then the static crewmate harness.
 Firstmate alone resolves a matched profile array: run `quota-axi --json` at that intake, evaluate every configured candidate against that current output, and choose the candidate with the most real headroom.
 Account for every candidate; if any harness/model/provider relationship, applicable quota data, or interpretation cannot be established, stop and report that candidate instead of omitting it, guessing, falling back, or calling the result quota-informed.
 Preserve malformed profile configuration as an actionable error rather than selecting around it.

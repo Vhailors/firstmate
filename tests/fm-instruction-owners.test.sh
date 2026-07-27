@@ -153,15 +153,27 @@ test_captain_routing_profiles_stay_agent_owned() {
   done
   assert_grep 'pi openai-codex/gpt-5.6-luna high' "$SECONDMATE" \
     "persistent secondmate Pi Luna pin is missing"
-  jq -e '
-    any(.rules[];
-      .when == "The task is a bug-bounty or security engagement."
-      and .use == {"harness":"pi","model":"zai/glm-5.2","effort":"high"})
-    and all([.rules[].use, .default][];
-      if type == "array" then all(.[]; (.model? // "") != "zai/glm-5.1")
-      else (.model? // "") != "zai/glm-5.1"
-      end)
-  ' "$DISPATCH_EXAMPLE" >/dev/null || fail "dispatch example lost the GLM 5.2 hard pin or retained GLM 5.1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -e '
+      (.default | map({harness, model, effort})) as $default
+      | any(.rules[];
+          .when == "The task is a bug-bounty or security engagement."
+          and .use == {"harness":"pi","model":"zai/glm-5.2","effort":"high"})
+      and all([.rules[].use, .default][];
+          if type == "array" then all(.[]; (.model? // "") != "zai/glm-5.1")
+          else (.model? // "") != "zai/glm-5.1"
+          end)
+      and all([
+            {"harness":"grok","model":"grok-4.5","effort":"high"},
+            {"harness":"claude","model":"opus","effort":"high"},
+            {"harness":"codex","model":"gpt-5.6-sol","effort":"high"},
+            {"harness":"pi","model":"openai-codex/gpt-5.6-sol","effort":"high"}
+          ][]; . as $profile | any($default[]; . == $profile))
+    ' "$DISPATCH_EXAMPLE" >/dev/null \
+      || fail "dispatch example lost the GLM 5.2 hard pin, a standing implementation default, or retained GLM 5.1"
+  else
+    pass "dispatch example profile assertions skipped without jq"
+  fi
   assert_no_grep 'fm-dispatch-select' "$AGENTS" \
     "agent-owned routing policy resurrected the removed selector"
   pass "captain routing profiles remain agent-owned and keep persistent secondmates pinned"

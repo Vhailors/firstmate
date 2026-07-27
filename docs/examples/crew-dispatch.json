@@ -11,9 +11,9 @@
       "why": "Grok is the preferred dispatch when current web-connected context is central to the work."
     },
     {
-      "when": "The task is a trivial mechanical edit such as a rote rename, formatting sweep, targeted typo fix, or simple file gathering.",
-      "use": { "harness": "claude", "model": "opus", "effort": "high" },
-      "why": "Claude Code implementation work uses Opus at high effort."
+      "when": "The task is a genuinely trivial mechanical edit such as a rote rename, formatting sweep, targeted typo fix, or simple file gathering, with no design or ambiguity to resolve.",
+      "use": { "harness": "grok", "model": "grok-4.5", "effort": "high" },
+      "why": "Direct Grok Build takes narrow low-ambiguity mechanical work; Opus at high effort stays the standing profile for Claude implementation and design work, and Sol at high effort for Codex and Pi."
     },
     {
       "when": "The task is a big or ambiguous multi-file feature, a risky refactor, or work that requires holding many moving parts in mind.",
