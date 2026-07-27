@@ -170,6 +170,10 @@ Preserve malformed profile configuration as an actionable error rather than sele
 When every candidate is tight, preserve the captain's strongest-reasoning class rather than silently downgrading it solely to conserve quota; stop and report the tight choice if that class cannot proceed.
 Break genuine headroom ties without array-order or harness bias.
 `quota-axi` owns how model or product windows relate to bounding account windows.
+For future implementation crewmates, the standing high-effort profiles are direct Grok Build `grok-4.5`, Claude `opus`, Codex `gpt-5.6-sol`, and Pi `openai-codex/gpt-5.6-sol`; a more specific project rule or explicit captain override still wins.
+For bug-bounty or security-engagement crewmates, bypass ordinary profile-array selection and hard-pin Pi `zai/glm-5.2` at high effort.
+If that GLM 5.2 profile or its capacity cannot be established, report the capacity blocker; never substitute GLM 5.1, Opus, Sol, Fable, or a random candidate.
+Stale, unavailable, or unscorable quota is unresolved evidence under the stop-and-report rule above, never permission for random fallback.
 The generic effort fallback and its precedence are owned by `harness-adapters`: explicit captain and standing configured effort win; otherwise use low for well-understood explicit work, xhigh for ambiguous investigation or design, intermediate levels proportionally, and never max without explicit captain preference.
 Do not add model-specific versions of that policy.
 

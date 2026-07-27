@@ -17,6 +17,7 @@ CONFIG="$ROOT/docs/configuration.md"
 AGENTS="$ROOT/AGENTS.md"
 BRIEF="$ROOT/bin/fm-brief.sh"
 BOOTSTRAP="$ROOT/bin/fm-bootstrap.sh"
+DISPATCH_EXAMPLE="$ROOT/docs/examples/crew-dispatch.json"
 
 test_new_skill_metadata_and_triggers() {
   local skill name count
@@ -138,6 +139,32 @@ test_agent_owned_quota_array_dispatch_contract() {
   assert_grep 'agent-owned dispatch-profile array procedure in AGENTS.md section 4.' "$BOOTSTRAP" \
     "bootstrap docs do not point to the agent-owned array procedure"
   pass "firstmate directly compares every quota candidate with authoritative model discovery"
+}
+
+test_captain_routing_profiles_stay_agent_owned() {
+  local phrase
+  for phrase in \
+    'direct Grok Build `grok-4.5`, Claude `opus`, Codex `gpt-5.6-sol`, and Pi `openai-codex/gpt-5.6-sol`' \
+    'hard-pin Pi `zai/glm-5.2` at high effort' \
+    'never substitute GLM 5.1, Opus, Sol, Fable, or a random candidate' \
+    'Stale, unavailable, or unscorable quota is unresolved evidence' \
+    'never permission for random fallback'; do
+    assert_grep "$phrase" "$AGENTS" "captain routing contract lost '$phrase'"
+  done
+  assert_grep 'pi openai-codex/gpt-5.6-luna high' "$SECONDMATE" \
+    "persistent secondmate Pi Luna pin is missing"
+  jq -e '
+    any(.rules[];
+      .when == "The task is a bug-bounty or security engagement."
+      and .use == {"harness":"pi","model":"zai/glm-5.2","effort":"high"})
+    and all([.rules[].use, .default][];
+      if type == "array" then all(.[]; (.model? // "") != "zai/glm-5.1")
+      else (.model? // "") != "zai/glm-5.1"
+      end)
+  ' "$DISPATCH_EXAMPLE" >/dev/null || fail "dispatch example lost the GLM 5.2 hard pin or retained GLM 5.1"
+  assert_no_grep 'fm-dispatch-select' "$AGENTS" \
+    "agent-owned routing policy resurrected the removed selector"
+  pass "captain routing profiles remain agent-owned and keep persistent secondmates pinned"
 }
 
 test_shared_authoring_requirements_are_owned() {
@@ -291,6 +318,7 @@ test_diagnostic_owner_covers_causal_procedure
 test_project_management_owner_covers_guarded_operations
 test_generic_effort_fallback_respects_precedence
 test_agent_owned_quota_array_dispatch_contract
+test_captain_routing_profiles_stay_agent_owned
 test_shared_authoring_requirements_are_owned
 test_secondmate_registry_contract_stays_concise
 test_state_startup_and_ordinary_recovery_placement
