@@ -38,7 +38,7 @@ This is the current headless fail-open limit.
 Pi command shape:
 
 ```sh
-pi -p -e .pi/extensions/fm-primary-turnend-guard.ts \
+pi -p --no-extensions -e .pi/extensions/fm-primary-turnend-guard.ts \
   --no-context-files --no-session \
   'After obeying any earlier session-start instruction, reply with exactly PI_SMOKE_DONE.'
 ```

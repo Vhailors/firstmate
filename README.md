@@ -99,11 +99,14 @@ grok --trust
 **Pi**
 
 ```sh
-pi
+bin/fm-pi-primary.sh
 ```
 
 For Grok, `--trust` is needed once per clone so project hooks and the turn-end guard load; `/hooks-trust` inside Grok works too.
-For Pi, approve the project trust prompt once per clone on first launch so the tracked `.pi/extensions/*.ts` files auto-load.
+For Pi, the tracked launcher disables extension discovery and explicitly loads only Firstmate's required turn-end guard and watcher extensions.
+This keeps user-global packages such as `pi-pretty` available to ordinary `pi` sessions without letting them alter Firstmate primary or worker startup.
+Project trust can still be requested for non-extension project resources.
+Pass `-e .pi/extensions/fm-calm.ts` to `bin/fm-pi-primary.sh` when Calm presentation is wanted for that scoped session.
 Pi's `/calm` toggle hides supported transcript chrome, including canonically classified Firstmate operational user rows, while retaining native working activity and all model context and session data.
 The hidden operational inputs remain ordinary user-role messages with unchanged delivery, ordering, authority, persistence, and exports.
 The preference persists for the effective Firstmate home, and toggling it off restores ordinary rendering.

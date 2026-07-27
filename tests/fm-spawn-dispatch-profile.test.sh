@@ -342,7 +342,7 @@ test_pi_threads_model_and_max_effort() {
   expect_code 0 "$status" "pi spawn with max effort should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi openai-codex/gpt-5.6-sol max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "pi --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
+  assert_contains "$launch" "pi --no-extensions --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
     "pi launch did not thread the requested model and max thinking level"
   assert_not_contains "$launch" "FM_FIRSTMATE_PI_LAUNCH_BRIEF=" \
     "pi launch still exports the removed Calm input-reroute binding"
