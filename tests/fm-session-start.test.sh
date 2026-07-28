@@ -409,9 +409,15 @@ SH
 # codex and opencode have no env markers (ancestry only). Without this, a local
 # claude/pi/grok session fails cases that pin a different fake harness while CI
 # (no ambient markers) still passes.
+# FM_PI_EXTENSION_ISOLATION is dropped for the same reason: bin/fm-pi-primary.sh
+# exports it into the whole Pi primary session, which is the repo's own default
+# launch, so a suite run from one would inherit it. A prefix assignment on this
+# function is exported and would be scrubbed too, so cases that need the marker
+# pass FM_TEST_PI_ISOLATION and it is re-applied after the scrub.
 run_session_start() {
   local home=$1 root=$2 path=$3
-  env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT \
+  env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_EXTENSION_ISOLATION \
+    ${FM_TEST_PI_ISOLATION:+FM_PI_EXTENSION_ISOLATION="$FM_TEST_PI_ISOLATION"} \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
     "$SESSION_START"
 }
@@ -1321,7 +1327,7 @@ EOF
   write_pi_loaded_markers "$home" "$root" "$holder_pid"
 
   unscoped=$(FM_FAKE_HARNESS=pi run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
-  scoped=$(FM_FAKE_HARNESS=pi FM_PI_EXTENSION_ISOLATION=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  scoped=$(FM_FAKE_HARNESS=pi FM_TEST_PI_ISOLATION=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   kill "$holder_pid" 2>/dev/null || true
   wait "$holder_pid" 2>/dev/null || true
 

@@ -206,7 +206,8 @@ pi -p -e .pi/extensions/fm-primary-turnend-guard.ts --no-context-files --no-sess
 ```
 
 The Pi line above is the command as it ran on 2026-07-09 at Pi 0.80.5, before Firstmate scoped Pi extension discovery.
-The current recommended shape for a new run adds `--no-extensions` before the `-e` flag, matching `bin/fm-pi-primary.sh`; that flag only narrows which extensions load, so it does not change the hook behavior this record validates.
+The current recommended shape for a new run adds `--no-extensions` and names both required extensions explicitly, matching `bin/fm-pi-primary.sh`: `pi -p --no-extensions -e .pi/extensions/fm-primary-turnend-guard.ts -e .pi/extensions/fm-primary-pi-watch.ts --no-context-files --no-session "$PROMPT"`.
+That flag only narrows which extensions load, so it does not change the hook behavior this record validates, and the second `-e` restores the watcher extension that the recorded run picked up through project-trust discovery, without which the native-supervision `fm_watch_arm_pi` result below cannot be reproduced.
 
 Observed output for the four allowed calls was `UNRELATED_EXECUTED`, a successful read-only `pgrep`, `CHECKPOINT_EXECUTED`, and two `TMUX_ARGS:` lines that preserved the watcher text as data.
 Each harness blocked the final command with exit 2 mapped through its native adapter behavior.
