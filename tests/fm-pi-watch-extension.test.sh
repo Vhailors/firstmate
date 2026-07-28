@@ -106,7 +106,7 @@ test_tracked_extension_present_and_self_hashing() {
 test_spawn_template_mentions_pi_watch_placeholder() {
   local text
   text=$(cat "$ROOT/bin/fm-spawn.sh")
-  assert_contains "$text" "pi --no-extensions __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__" "Pi secondmate launch template does not scope discovery to both primary extensions"
+  assert_contains "$text" "FM_PI_EXTENSION_ISOLATION=1 pi --no-extensions __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__" "Pi secondmate launch template does not scope discovery to both primary extensions under the isolation marker"
   assert_contains "$text" "pi --no-extensions __MODELFLAG____EFFORTFLAG__-e __PIEXT__" "Pi crewmate launch template does not scope discovery to its turn-end extension"
   assert_contains "$text" "\$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts" "fm-spawn does not point the Pi secondmate watch placeholder at the tracked extension"
   assert_not_contains "$text" "fm-pi-watch-extension.sh" "fm-spawn should no longer generate the Pi watch extension before launch"
@@ -123,6 +123,7 @@ test_primary_launcher_scopes_extension_loading() {
   cat > "$fakebin/pi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "${FM_PI_ARGS_CAPTURE:?}"
+printf '%s\n' "${FM_PI_EXTENSION_ISOLATION:-unset}" > "${FM_PI_ARGS_CAPTURE:?}.isolation"
 SH
   chmod +x "$fakebin/pi"
 
@@ -138,6 +139,8 @@ SH
   assert_not_contains "$(cat "$capture")" "fm-calm.ts" "Pi primary launcher still loads the conflicting Calm extension by default"
   assert_contains "$(cat "$capture")" "test/model" "Pi primary launcher did not preserve caller model arguments"
   assert_contains "$(cat "$capture")" "launch brief" "Pi primary launcher did not preserve the positional prompt"
+  [ "$(cat "$capture.isolation")" = 1 ] \
+    || fail "Pi primary launcher did not mark the session as extension-isolated"
   pass "Pi primary launcher disables discovery and restores only the required guard and watcher extensions"
 }
 

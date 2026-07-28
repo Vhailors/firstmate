@@ -18,4 +18,4 @@ When this session owns supervision and away mode is not active:
 
 The turn-end guard extension lives at `__FM_PI_TURNEND_EXT__`.
 The watcher extension lives at `__FM_PI_EXT__`.
-Both are tracked, project-local `.pi/extensions/*.ts` files that the scoped primary launcher loads explicitly; `bin/fm-session-start.sh` reports when the running Pi session has not loaded both required extensions.
+Both are tracked, project-local `.pi/extensions/*.ts` files that the scoped primary launcher loads explicitly; `bin/fm-session-start.sh` reports when the running Pi session has not loaded both required extensions, and reports separately when they are loaded without the launcher's discovery boundary.

@@ -96,7 +96,7 @@ Do not substitute another harness's wait shape when resuming supervision.
 Claude's Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`) owns tokenless re-arm around `bin/fm-watch-arm.sh`, and Grok uses tracked background-notify cycles around `bin/fm-watch-arm.sh`.
 Codex uses bounded foreground checkpoints through `bin/fm-watch-checkpoint.sh` because Codex cannot reason while a foreground tool call is running.
 OpenCode uses `.opencode/plugins/fm-primary-watch-arm.js`, which coordinates with the turn-end guard plugin and wakes the TUI with `client.session.promptAsync`.
-Pi uses the tracked `.pi/extensions/fm-primary-turnend-guard.ts` plus the tracked `.pi/extensions/fm-primary-pi-watch.ts`, both project-local extensions Pi auto-discovers once trusted.
+Pi uses the tracked `.pi/extensions/fm-primary-turnend-guard.ts` plus the tracked `.pi/extensions/fm-primary-pi-watch.ts`, both project-local extensions that `bin/fm-pi-primary.sh` loads explicitly with extension discovery disabled.
 When changing any primary watcher adapter, update `docs/supervision-protocols/`, `docs/turnend-guard.md` if a shared idle or turn-end hook changed, and the relevant concise fact below.
 
 ## Launch profile axes
@@ -261,8 +261,8 @@ Without `deliverAs: "followUp"`, Pi rejects the send while the agent is still pr
 Pi's primary watcher protocol also requires the tracked `.pi/extensions/fm-primary-pi-watch.ts` extension.
 The model arms through `fm_watch_arm_pi`, never a foreground bash arm; the watcher tool result and clean-exit fallback are owned by `docs/supervision-protocols/pi.md`.
 `bin/fm-pi-primary.sh` disables extension discovery and loads the turn-end guard and watcher explicitly, so unrelated global extensions cannot register duplicate tools in a Firstmate primary.
-`bin/fm-session-start.sh` reports when the live Pi session has not loaded both extensions and points back to that launcher.
-When a secondmate is launched on Pi, `fm-spawn.sh --secondmate` applies the same discovery boundary and loads both extensions from the secondmate home's git worktree.
+The launcher exports `FM_PI_EXTENSION_ISOLATION=1`, so `bin/fm-session-start.sh` reports both a live Pi session that has not loaded both extensions and one that loaded them without that discovery boundary, and points back to the launcher in either case.
+When a secondmate is launched on Pi, `fm-spawn.sh --secondmate` applies the same discovery boundary and marker, and loads both extensions from the secondmate home's git worktree.
 
 ## grok (VERIFIED 2026-06-29, grok 0.2.73; slash-submit re-verified 2026-07-03 on 0.2.82; reasoning-effort ceiling re-verified 2026-07-13 on 0.2.99; exit paths re-verified 2026-07-19 on grok 0.2.103)
 

@@ -1304,6 +1304,34 @@ EOF
   pass "session start accepts current Pi markers written before lock acquisition"
 }
 
+test_pi_diagnostic_reports_unscoped_extension_discovery() {
+  local rec root home fakebin unscoped scoped holder_pid
+  rec=$(new_world pi-unscoped-discovery)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+
+  sleep 300 &
+  holder_pid=$!
+  make_fake_ps_pi_holder "$fakebin" "$holder_pid"
+  install_pi_turnend_extension_fixture "$root"
+  install_pi_watch_extension_fixture "$root"
+
+  write_pi_loaded_markers "$home" "$root" "$holder_pid"
+
+  unscoped=$(FM_FAKE_HARNESS=pi run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  scoped=$(FM_FAKE_HARNESS=pi FM_PI_EXTENSION_ISOLATION=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  assert_contains "$unscoped" "PI_EXTENSION_ISOLATION: not scoped" "pi diagnostic stayed silent about a loaded-but-discovered extension session"
+  assert_contains "$unscoped" "restart through $root/bin/fm-pi-primary.sh" "pi isolation diagnostic omits the scoped primary launcher"
+  assert_not_contains "$scoped" "PI_EXTENSION_ISOLATION: not scoped" "pi isolation diagnostic fired for a session launched through the scoped launcher"
+
+  pass "session start reports a Pi primary whose extensions loaded without the discovery boundary"
+}
+
 test_pi_diagnostic_rejects_missing_turnend_guard_marker() {
   local rec root home fakebin out holder_pid
   rec=$(new_world pi-missing-turnend-marker)
@@ -1381,5 +1409,6 @@ test_next_step_afk_delegates_to_daemon
 test_supervision_block_exactly_one_and_pi_diagnostic
 test_pi_diagnostic_rejects_stale_loaded_marker
 test_pi_diagnostic_accepts_prelock_loaded_marker
+test_pi_diagnostic_reports_unscoped_extension_discovery
 test_pi_diagnostic_rejects_missing_turnend_guard_marker
 test_pi_diagnostic_rejects_previous_session_loaded_marker

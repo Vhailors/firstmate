@@ -4,6 +4,9 @@
 # This keeps user-global extensions available to ordinary `pi` sessions while
 # preventing unrelated packages from colliding with Firstmate's Pi extensions.
 # Every argument is forwarded to Pi unchanged after the required launch flags.
+# FM_PI_EXTENSION_ISOLATION marks the launched session as discovery-scoped so
+# bin/fm-session-start.sh can report a Pi primary that was started some other
+# way and therefore still has user-global extensions loaded.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,4 +26,5 @@ if ! command -v pi >/dev/null 2>&1; then
   exit 1
 fi
 
+export FM_PI_EXTENSION_ISOLATION=1
 exec pi --no-extensions -e "$TURNEND_EXT" -e "$WATCH_EXT" "$@"

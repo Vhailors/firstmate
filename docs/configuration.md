@@ -181,6 +181,7 @@ Primary-session turn-end guard integrations for verified harnesses are tracked a
 Primary-session watcher wake protocols are rendered at session start by [`bin/fm-supervision-instructions.sh`](../bin/fm-supervision-instructions.sh) from [`docs/supervision-protocols/`](supervision-protocols/).
 Claude's Stop `asyncRewake` hook owns tokenless re-arm cycles, Grok uses background-notify cycles, Codex uses bounded foreground checkpoints, Pi uses its two tracked primary extensions, and OpenCode uses its TUI plugin.
 `bin/fm-pi-primary.sh` launches a Pi primary with extension discovery disabled and restores only the required turn-end guard and watcher extensions, leaving user-global packages untouched for ordinary Pi sessions.
+It exports `FM_PI_EXTENSION_ISOLATION=1` into the session, which is how `bin/fm-session-start.sh` detects a Pi primary that was started outside that boundary; the Pi secondmate launch template sets the same marker.
 `config/crew-harness` is a local, gitignored file containing one adapter name for crewmate and scout launches.
 When it is absent or contains `default`, crewmates mirror the firstmate's own harness.
 `config/secondmate-harness` is a separate local, gitignored file containing the adapter the primary uses to launch secondmate agents, optionally followed by model and effort tokens on the same line.
