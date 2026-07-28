@@ -38,10 +38,13 @@ This is the current headless fail-open limit.
 Pi command shape:
 
 ```sh
-pi -p --no-extensions -e .pi/extensions/fm-primary-turnend-guard.ts \
+pi -p -e .pi/extensions/fm-primary-turnend-guard.ts \
   --no-context-files --no-session \
   'After obeying any earlier session-start instruction, reply with exactly PI_SMOKE_DONE.'
 ```
+
+The shape above is the command as it ran on 2026-07-17 at Pi 0.80.10, before Firstmate scoped Pi extension discovery.
+The current recommended shape for a new run adds `--no-extensions` before the `-e` flag, matching `bin/fm-pi-primary.sh`; that flag only narrows which extensions load, so it does not change the transport behavior this record validates.
 
 Observed result: `PI_SMOKE_DONE`, with one session-start execution.
 The earlier `sendUserMessage` counterfactual raced the positional prompt; the current non-triggering `pi.sendMessage` custom message did not.

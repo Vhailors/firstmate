@@ -202,8 +202,11 @@ claude -p "$PROMPT" --dangerously-skip-permissions --output-format text
 codex exec --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "$PROMPT"
 GROK_HOME="$SCRATCH_GROK_HOME" RUST_LOG=xai_grok_hooks=debug GROK_LOG_FILE="$SCRATCH_LOG" grok --trust -p "$PROMPT" --permission-mode bypassPermissions --output-format plain
 OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode run --print-logs --log-level INFO "$PROMPT"
-pi -p --no-extensions -e .pi/extensions/fm-primary-turnend-guard.ts --no-context-files --no-session "$PROMPT"
+pi -p -e .pi/extensions/fm-primary-turnend-guard.ts --no-context-files --no-session "$PROMPT"
 ```
+
+The Pi line above is the command as it ran on 2026-07-09 at Pi 0.80.5, before Firstmate scoped Pi extension discovery.
+The current recommended shape for a new run adds `--no-extensions` before the `-e` flag, matching `bin/fm-pi-primary.sh`; that flag only narrows which extensions load, so it does not change the hook behavior this record validates.
 
 Observed output for the four allowed calls was `UNRELATED_EXECUTED`, a successful read-only `pgrep`, `CHECKPOINT_EXECUTED`, and two `TMUX_ARGS:` lines that preserved the watcher text as data.
 Each harness blocked the final command with exit 2 mapped through its native adapter behavior.
