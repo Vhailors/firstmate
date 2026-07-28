@@ -9,17 +9,27 @@
 # auto-approves), and only as a clean fast-forward - it refuses a diverged branch
 # and tells you to have the crewmate rebase. See AGENTS.md prime directives,
 # project management, and task lifecycle.
-# Usage: fm-merge-local.sh <task-id>
+#
+# A task dispatched with fm-spawn.sh --no-merge records merge=blocked and is
+# refused here before any git state changes; bin/fm-merge-authority-lib.sh owns
+# that contract and the leading --captain-authorized that lifts it.
+# Usage: fm-merge-local.sh [--captain-authorized] <task-id>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+# shellcheck source=bin/fm-merge-authority-lib.sh
+. "$SCRIPT_DIR/fm-merge-authority-lib.sh"
+fm_merge_authority_parse_leading "$@"
+set -- "${FM_MERGE_ARGS[@]+"${FM_MERGE_ARGS[@]}"}"
 "$FM_ROOT/bin/fm-guard.sh" || true
-ID=${1:?usage: fm-merge-local.sh <task-id>}
+ID=${1:?usage: fm-merge-local.sh [--captain-authorized] <task-id>}
 META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
+
+fm_merge_authority_check "$META" "$ID" "$FM_MERGE_AUTHORIZED" || exit 1
 
 PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)

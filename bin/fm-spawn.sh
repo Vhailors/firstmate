@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--scout]
+# Usage: fm-spawn.sh <task-id> <project-dir> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--scout] [--no-merge]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
+#   --no-merge records merge=blocked in the task's meta, so bin/fm-pr-merge.sh
+#   and bin/fm-merge-local.sh both refuse to land this task until an explicit
+#   --captain-authorized invocation lifts it. Use it for every lane the captain
+#   has told to reach a reviewable pull request only: a "do not merge" line in
+#   the brief is guidance to the worker and binds nothing else, while this field
+#   is the constraint firstmate's own merge actions can read and obey.
+#   bin/fm-merge-authority-lib.sh owns the field and its values.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
 #   axes chosen by firstmate at intake. They are only threaded into harnesses whose
 #   installed CLIs were verified to support that axis; unsupported axes are omitted
@@ -118,7 +125,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-  sed -n '2,78p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,85p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in
@@ -171,6 +178,7 @@ fm_refuse_if_gate_agent
 # set by the batch loop below), so the guard runs once for the batch, not once per pair.
 [ -n "${FM_SPAWN_NO_GUARD:-}" ] || "$FM_ROOT/bin/fm-guard.sh" || true
 KIND=ship
+MERGE_AUTHORITY=
 HARNESS_ARG=
 MODEL=
 EFFORT=
@@ -199,6 +207,7 @@ for a in "$@"; do
   case "$a" in
     --scout) KIND=scout ;;
     --secondmate) KIND=secondmate ;;
+    --no-merge) MERGE_AUTHORITY=blocked ;;
     --harness) want_value=harness ;;
     --harness=*) HARNESS_ARG=${a#--harness=}; HARNESS_SET=1 ;;
     --model) want_value=model ;;
@@ -313,6 +322,9 @@ spawn_abort_cleanup() {
             echo "kind=$KIND"
             echo "mode=${MODE:-no-mistakes}"
             echo "yolo=${YOLO:-off}"
+            # Carried onto the leak record too, so a later recovery of this
+            # orphaned worktree cannot read a dropped field as permission.
+            [ -z "$MERGE_AUTHORITY" ] || echo "merge=$MERGE_AUTHORITY"
             echo "tasktmp=${TASK_TMP:-}"
             echo "model=${MODEL:-default}"
             echo "effort=${EFFORT:-default}"
@@ -1465,6 +1477,10 @@ META_WINDOW=$T
   echo "kind=$KIND"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
+  # merge= is written only for a --no-merge spawn, so an ordinary task's meta
+  # stays byte-identical and absent merge= keeps meaning "merging is allowed"
+  # (bin/fm-merge-authority-lib.sh).
+  [ -z "$MERGE_AUTHORITY" ] || echo "merge=$MERGE_AUTHORITY"
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
@@ -1574,4 +1590,4 @@ if [ "$KIND" = secondmate ]; then
   fi
 fi
 
-echo "spawned $ID harness=$HARNESS kind=$KIND mode=$MODE yolo=$YOLO window=$META_WINDOW worktree=$WT"
+echo "spawned $ID harness=$HARNESS kind=$KIND mode=$MODE yolo=$YOLO window=$META_WINDOW worktree=$WT${MERGE_AUTHORITY:+ merge=$MERGE_AUTHORITY}"
