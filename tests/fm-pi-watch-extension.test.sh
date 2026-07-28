@@ -7,6 +7,7 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-pi-watch-extension)
 EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
+PRIMARY_LAUNCHER="$ROOT/bin/fm-pi-primary.sh"
 # Node 24 warns when these test-only dynamic imports load tracked ESM plugins
 # from a clean checkout with no tracked .opencode/package.json. The warning is
 # unrelated to plugin output, which the assertions intentionally require empty.
@@ -105,12 +106,42 @@ test_tracked_extension_present_and_self_hashing() {
 test_spawn_template_mentions_pi_watch_placeholder() {
   local text
   text=$(cat "$ROOT/bin/fm-spawn.sh")
-  assert_contains "$text" "-e __PITURNEND__ -e __PIWATCH__" "Pi secondmate launch template does not include both primary extensions"
+  assert_contains "$text" "FM_PI_EXTENSION_ISOLATION=1 pi --no-extensions __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__" "Pi secondmate launch template does not scope discovery to both primary extensions under the isolation marker"
+  assert_contains "$text" "pi --no-extensions __MODELFLAG____EFFORTFLAG__-e __PIEXT__" "Pi crewmate launch template does not scope discovery to its turn-end extension"
   assert_contains "$text" "\$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts" "fm-spawn does not point the Pi secondmate watch placeholder at the tracked extension"
   assert_not_contains "$text" "fm-pi-watch-extension.sh" "fm-spawn should no longer generate the Pi watch extension before launch"
   assert_contains "$text" "__PITURNEND__" "fm-spawn does not replace the Pi turn-end guard extension placeholder"
   assert_contains "$text" "__PIWATCH__" "fm-spawn does not replace the Pi watch extension placeholder"
-  pass "Pi secondmate launch wiring includes both tracked primary extensions"
+  pass "Pi spawn wiring disables discovery and explicitly loads only its Firstmate extensions"
+}
+
+test_primary_launcher_scopes_extension_loading() {
+  local fakebin capture
+  fakebin="$TMP_ROOT/primary-launcher-bin"
+  capture="$TMP_ROOT/primary-launcher-args"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/pi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "${FM_PI_ARGS_CAPTURE:?}"
+printf '%s\n' "${FM_PI_EXTENSION_ISOLATION:-unset}" > "${FM_PI_ARGS_CAPTURE:?}.isolation"
+SH
+  chmod +x "$fakebin/pi"
+
+  assert_present "$PRIMARY_LAUNCHER" "tracked Pi primary launcher is missing"
+  PATH="$fakebin:$PATH" FM_PI_ARGS_CAPTURE="$capture" "$PRIMARY_LAUNCHER" --model test/model "launch brief"
+
+  [ "$(grep -Fxc -- '--no-extensions' "$capture")" -eq 1 ] \
+    || fail "Pi primary launcher did not disable discovered extensions exactly once"
+  [ "$(grep -Fxc -- '-e' "$capture")" -eq 2 ] \
+    || fail "Pi primary launcher did not explicitly load exactly two extensions"
+  assert_contains "$(cat "$capture")" "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "Pi primary launcher omitted the turn-end guard"
+  assert_contains "$(cat "$capture")" "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "Pi primary launcher omitted the watcher extension"
+  assert_not_contains "$(cat "$capture")" "fm-calm.ts" "Pi primary launcher still loads the conflicting Calm extension by default"
+  assert_contains "$(cat "$capture")" "test/model" "Pi primary launcher did not preserve caller model arguments"
+  assert_contains "$(cat "$capture")" "launch brief" "Pi primary launcher did not preserve the positional prompt"
+  [ "$(cat "$capture.isolation")" = 1 ] \
+    || fail "Pi primary launcher did not mark the session as extension-isolated"
+  pass "Pi primary launcher disables discovery and restores only the required guard and watcher extensions"
 }
 
 test_pi_extension_reports_external_healthy_watcher() {
@@ -2000,6 +2031,7 @@ EOF
 
 test_tracked_extension_present_and_self_hashing
 test_spawn_template_mentions_pi_watch_placeholder
+test_primary_launcher_scopes_extension_loading
 test_pi_extension_reports_external_healthy_watcher
 test_pi_tool_returns_agent_tool_result
 test_pi_redundant_tool_call_is_owned_noop

@@ -48,7 +48,10 @@
 #
 # On a Pi primary, the supervision-block step also checks whether Pi's two
 # tracked primary extensions are loaded and prints a PI_WATCH_EXTENSION
-# reminder line when one is missing.
+# reminder line when one is missing. When both are loaded but the session was
+# not started with Firstmate's extension isolation, it prints a
+# PI_EXTENSION_ISOLATION reminder instead, because discovered user-global
+# extensions can register duplicate built-in tools in that case.
 #
 # Why lock first: the old documented order (bootstrap, THEN lock) let a
 # SECOND concurrent session run bootstrap's mutating sweeps - fast-forwarding
@@ -321,7 +324,9 @@ if [ "$PRIMARY_HARNESS" = pi ]; then
   PI_TURNEND_VERSION=$(hash_file "$PI_TURNEND_EXT" || printf '')
   if ! pi_extension_loaded "$PI_WATCH_MARKER" "$PI_WATCH_VERSION" "$PI_LOCK" \
     || ! pi_extension_loaded "$PI_TURNEND_MARKER" "$PI_TURNEND_VERSION" "$PI_LOCK"; then
-    printf 'PI_WATCH_EXTENSION: not loaded - approve Pi project trust once per clone, then restart plain pi so %s and %s auto-load for turn-end guard and background wake coverage; use -e %s -e %s only if project hooks are not trusted\n' "$PI_TURNEND_EXT" "$PI_EXT" "$PI_TURNEND_EXT" "$PI_EXT"
+    printf 'PI_WATCH_EXTENSION: not loaded - restart through %s so extension discovery stays disabled while %s and %s load explicitly for turn-end guard and background wake coverage\n' "$FM_ROOT/bin/fm-pi-primary.sh" "$PI_TURNEND_EXT" "$PI_EXT"
+  elif [ "${FM_PI_EXTENSION_ISOLATION:-}" != 1 ]; then
+    printf 'PI_EXTENSION_ISOLATION: not scoped - both extensions are loaded, but this session was not launched with Firstmate extension isolation, so discovered user-global Pi extensions can still register duplicate built-in tools alongside them; restart through %s\n' "$FM_ROOT/bin/fm-pi-primary.sh"
   fi
 fi
 "$SCRIPT_DIR/fm-supervision-instructions.sh" \

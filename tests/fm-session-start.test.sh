@@ -409,9 +409,15 @@ SH
 # codex and opencode have no env markers (ancestry only). Without this, a local
 # claude/pi/grok session fails cases that pin a different fake harness while CI
 # (no ambient markers) still passes.
+# FM_PI_EXTENSION_ISOLATION is dropped for the same reason: bin/fm-pi-primary.sh
+# exports it into the whole Pi primary session, which is the repo's own default
+# launch, so a suite run from one would inherit it. A prefix assignment on this
+# function is exported and would be scrubbed too, so cases that need the marker
+# pass FM_TEST_PI_ISOLATION and it is re-applied after the scrub.
 run_session_start() {
   local home=$1 root=$2 path=$3
-  env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT \
+  env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_EXTENSION_ISOLATION \
+    ${FM_TEST_PI_ISOLATION:+FM_PI_EXTENSION_ISOLATION="$FM_TEST_PI_ISOLATION"} \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
     "$SESSION_START"
 }
@@ -1240,7 +1246,8 @@ EOF
   assert_contains "$out" "SUPERVISION OPERATING INSTRUCTIONS - primary harness: pi" "pi supervision block missing"
   assert_contains "$out" "Mode: Pi extension background wake." "pi snippet missing from session start"
   assert_contains "$out" "PI_WATCH_EXTENSION: not loaded" "pi extension load diagnostic missing"
-  assert_contains "$out" "restart plain pi so $root/.pi/extensions/fm-primary-turnend-guard.ts and $root/.pi/extensions/fm-primary-pi-watch.ts auto-load" "pi extension load diagnostic omits the turn-end guard extension"
+  assert_contains "$out" "restart through $root/bin/fm-pi-primary.sh so extension discovery stays disabled" "pi extension load diagnostic omits the scoped primary launcher"
+  assert_contains "$out" "$root/.pi/extensions/fm-primary-turnend-guard.ts and $root/.pi/extensions/fm-primary-pi-watch.ts load explicitly" "pi extension load diagnostic omits the required extensions"
 
   wake_line=$(printf '%s\n' "$out" | grep -n '^WAKE QUEUE$' | head -1 | cut -d: -f1)
   sup_line=$(printf '%s\n' "$out" | grep -n '^SUPERVISION OPERATING INSTRUCTIONS' | head -1 | cut -d: -f1)
@@ -1301,6 +1308,34 @@ EOF
   assert_not_contains "$out" "PI_WATCH_EXTENSION: not loaded" "pi diagnostic rejected a current pre-lock loaded marker"
 
   pass "session start accepts current Pi markers written before lock acquisition"
+}
+
+test_pi_diagnostic_reports_unscoped_extension_discovery() {
+  local rec root home fakebin unscoped scoped holder_pid
+  rec=$(new_world pi-unscoped-discovery)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+
+  sleep 300 &
+  holder_pid=$!
+  make_fake_ps_pi_holder "$fakebin" "$holder_pid"
+  install_pi_turnend_extension_fixture "$root"
+  install_pi_watch_extension_fixture "$root"
+
+  write_pi_loaded_markers "$home" "$root" "$holder_pid"
+
+  unscoped=$(FM_FAKE_HARNESS=pi run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  scoped=$(FM_FAKE_HARNESS=pi FM_TEST_PI_ISOLATION=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  assert_contains "$unscoped" "PI_EXTENSION_ISOLATION: not scoped" "pi diagnostic stayed silent about a loaded-but-discovered extension session"
+  assert_contains "$unscoped" "restart through $root/bin/fm-pi-primary.sh" "pi isolation diagnostic omits the scoped primary launcher"
+  assert_not_contains "$scoped" "PI_EXTENSION_ISOLATION: not scoped" "pi isolation diagnostic fired for a session launched through the scoped launcher"
+
+  pass "session start reports a Pi primary whose extensions loaded without the discovery boundary"
 }
 
 test_pi_diagnostic_rejects_missing_turnend_guard_marker() {
@@ -1380,5 +1415,6 @@ test_next_step_afk_delegates_to_daemon
 test_supervision_block_exactly_one_and_pi_diagnostic
 test_pi_diagnostic_rejects_stale_loaded_marker
 test_pi_diagnostic_accepts_prelock_loaded_marker
+test_pi_diagnostic_reports_unscoped_extension_discovery
 test_pi_diagnostic_rejects_missing_turnend_guard_marker
 test_pi_diagnostic_rejects_previous_session_loaded_marker

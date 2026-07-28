@@ -2,6 +2,8 @@
 
 Calm is a Pi-only conversation presentation toggle.
 It is off by default, and the last `/calm` choice persists for the effective Firstmate home across Pi session starts and resumes.
+The default `bin/fm-pi-primary.sh` launch excludes optional extensions, so opt in for one scoped session with `bin/fm-pi-primary.sh -e .pi/extensions/fm-calm.ts`.
+That scoped launch keeps Pi extension discovery disabled, which avoids duplicate built-in tool registrations from user-global presentation packages.
 
 While Calm is active, Pi's built-in `Working...` activity remains visible and no separate Calm status row is added.
 Calm hides collapsed thinking labels, the shells for Pi's seven built-in tools, the `fm_watch_arm_pi` tool shell, and canonically classified Firstmate operational user rows.

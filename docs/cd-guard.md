@@ -161,3 +161,6 @@ OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode run --print-logs
 pi -p -e .pi/extensions/fm-primary-turnend-guard.ts --no-context-files --no-session "$PROMPT"
 grok --trust -p "$PROMPT" --permission-mode bypassPermissions --output-format plain
 ```
+
+The Pi line above is the command as it ran on 2026-07-11 at Pi 0.80.6, before Firstmate scoped Pi extension discovery.
+The current recommended shape for a new run adds `--no-extensions` before the `-e` flag, matching `bin/fm-pi-primary.sh`; that flag only narrows which extensions load, so it does not change the guard behavior this record validates.
