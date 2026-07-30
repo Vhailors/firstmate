@@ -93,7 +93,61 @@ REAL_MV=$(command -v mv)
 REAL_MKTEMP=$(command -v mktemp)
 REAL_STAT=$(command -v stat)
 REAL_CAT=$(command -v cat)
+REAL_RM=$(command -v rm)
 TMP_ROOT=$(fm_test_tmproot fm-project-remove-tests)
+PROC_FIXTURE_BIN=$(fm_fakebin "$TMP_ROOT/proc-fixture-bin")
+
+# Most transaction tests exercise a fixture home and are intentionally
+# independent of unrelated same-UID desktop processes whose /proc handles may
+# be unreadable under ptrace_scope=1. Use the supported non-Linux scanner path
+# with a deterministic lsof fixture that still detects inherited open handles.
+# The dedicated scanner tests below bypass this PATH and prove that production
+# Linux code refuses when real same-UID enumeration is incomplete.
+cat > "$PROC_FIXTURE_BIN/uname" <<'SH'
+#!/usr/bin/env bash
+printf 'Darwin\n'
+SH
+cat > "$PROC_FIXTURE_BIN/stat" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = -f ]; then
+  case "${2:-}" in
+    %Lp) shift 2; exec "$FM_REAL_STAT" -c %a "$@" ;;
+    %d) shift 2; exec "$FM_REAL_STAT" -c %d "$@" ;;
+    %l) shift 2; exec "$FM_REAL_STAT" -c %h "$@" ;;
+  esac
+fi
+exec "$FM_REAL_STAT" "$@"
+SH
+cat > "$PROC_FIXTURE_BIN/lsof" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = +D ]; then
+  dir=${2:?}
+  prefix="$dir/"
+  for fd in /proc/$$/fd/*; do
+    target=$(readlink "$fd" 2>/dev/null) || continue
+    if [ "$target" = "$dir" ] || [ "${target:0:${#prefix}}" = "$prefix" ]; then
+      printf 'COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n'
+      printf 'fixture %s user 9r REG 0 0 0 %s\n' "$$" "$target"
+      exit 0
+    fi
+  done
+  exit 1
+fi
+printf 'p%s\nfcwd\nn/\n' "$$"
+SH
+cat > "$PROC_FIXTURE_BIN/rm" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  -rfx) shift; set -- -rf "$@" ;;
+  -x) shift ;;
+esac
+exec "$FM_REAL_RM" "$@"
+SH
+chmod +x "$PROC_FIXTURE_BIN/uname" "$PROC_FIXTURE_BIN/stat" \
+  "$PROC_FIXTURE_BIN/lsof" "$PROC_FIXTURE_BIN/rm"
 
 make_home() {
   mkdir -p "$1/data" "$1/state" "$1/projects"
@@ -123,7 +177,8 @@ write_quarantine_marker() {
 run_remove() {
   local home=$1
   shift
-  FM_HOME="$home" "$REMOVE" "$@" 2>&1
+  PATH="$PROC_FIXTURE_BIN:$PATH" FM_REAL_STAT="$REAL_STAT" FM_REAL_RM="$REAL_RM" \
+    FM_HOME="$home" "$REMOVE" "$@" 2>&1
 }
 
 make_failing_git_wrapper() {
@@ -1032,6 +1087,18 @@ set -u
 case "${1:-}" in
   "/proc/$FM_TEST_PROC_PID/fd") exit 86 ;;
 esac
+if [ "${FM_TEST_IGNORE_UNRELATED_PROC:-}" = 1 ]; then
+  case "${1:-}" in
+    /proc/[0-9]*/fd)
+      output=$("$FM_REAL_FIND" "$@" 2>&1)
+      status=$?
+      if [ "$status" -eq 0 ]; then
+        printf '%s\n' "$output"
+      fi
+      exit 0
+      ;;
+  esac
+fi
 exec "$FM_REAL_FIND" "$@"
 SH
   chmod +x "$fakebin/find"
@@ -1056,7 +1123,8 @@ SH
     make_landed_clone "$other_home" alpha
     add_registry "$other_home" alpha
     out=$(PATH="$fakebin:$PATH" FM_REAL_FIND="$REAL_FIND" FM_TEST_PROC_PID="$other_pid" \
-      FM_HOME="$other_home" "$REMOVE" alpha --confirm alpha 2>&1)
+      FM_TEST_IGNORE_UNRELATED_PROC=1 FM_HOME="$other_home" \
+      "$REMOVE" alpha --confirm alpha 2>&1)
     code=$?
     expect_code 0 "$code" "other-user proc scanner tolerance"
     assert_absent "$other_home/projects/alpha" "an inaccessible other-user proc root blocked removal"
@@ -1173,11 +1241,10 @@ test_root_git_payload_rechecked_after_handle_drain() {
   add_registry "$home" alpha
   marker="$home/root-git-race-fired"
   fakebin=$(fm_fakebin "$TMP_ROOT/fake-root-git-race")
-  cat > "$fakebin/find" <<'SH'
+  cat > "$fakebin/lsof" <<'SH'
 #!/usr/bin/env bash
 set -u
-case "${1:-}" in
-  /proc/[0-9]*/fd)
+if [ "${1:-}" = +D ]; then
     if [ ! -e "$FM_TEST_RACE_MARKER" ]; then
       for clone in "$FM_TEST_PROJECTS"/.fm-project-remove-alpha.*/clone; do
         [ -d "$clone/.git" ] || continue
@@ -1186,13 +1253,13 @@ case "${1:-}" in
         break
       done
     fi
-    ;;
-esac
-exec "$FM_REAL_FIND" "$@"
+fi
+exec "$FM_FIXTURE_LSOF" "$@"
 SH
-  chmod +x "$fakebin/find"
+  chmod +x "$fakebin/lsof"
 
-  out=$(PATH="$fakebin:$PATH" FM_REAL_FIND="$REAL_FIND" FM_TEST_RACE_MARKER="$marker" \
+  out=$(PATH="$fakebin:$PROC_FIXTURE_BIN:$PATH" FM_FIXTURE_LSOF="$PROC_FIXTURE_BIN/lsof" \
+    FM_REAL_STAT="$REAL_STAT" FM_REAL_RM="$REAL_RM" FM_TEST_RACE_MARKER="$marker" \
     FM_TEST_PROJECTS="$home/projects" FM_HOME="$home" "$REMOVE" alpha --confirm alpha 2>&1)
   code=$?
   expect_code 1 "$code" "root git payload boundary race refusal"
@@ -1211,22 +1278,21 @@ test_control_inventory_rechecked_immediately_before_delete() {
   add_registry "$home" alpha
   marker="$home/control-race-fired"
   fakebin=$(fm_fakebin "$TMP_ROOT/fake-control-boundary-race")
-  cat > "$fakebin/find" <<'SH'
+  cat > "$fakebin/lsof" <<'SH'
 #!/usr/bin/env bash
 set -u
-case "${1:-}" in
-  /proc/[0-9]*/fd)
+if [ "${1:-}" = +D ]; then
     if [ ! -e "$FM_TEST_RACE_MARKER" ]; then
       printf 'project=%s\n' "$FM_TEST_TARGET" > "$FM_TEST_STATE/raced.meta"
       : > "$FM_TEST_RACE_MARKER"
     fi
-    ;;
-esac
-exec "$FM_REAL_FIND" "$@"
+fi
+exec "$FM_FIXTURE_LSOF" "$@"
 SH
-  chmod +x "$fakebin/find"
+  chmod +x "$fakebin/lsof"
 
-  out=$(PATH="$fakebin:$PATH" FM_REAL_FIND="$REAL_FIND" FM_TEST_RACE_MARKER="$marker" \
+  out=$(PATH="$fakebin:$PROC_FIXTURE_BIN:$PATH" FM_FIXTURE_LSOF="$PROC_FIXTURE_BIN/lsof" \
+    FM_REAL_STAT="$REAL_STAT" FM_REAL_RM="$REAL_RM" FM_TEST_RACE_MARKER="$marker" \
     FM_TEST_STATE="$home/state" FM_TEST_TARGET="$home/projects/alpha" FM_HOME="$home" \
     "$REMOVE" alpha --confirm alpha 2>&1)
   code=$?
