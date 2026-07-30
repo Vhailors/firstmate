@@ -104,6 +104,18 @@ prime_turnend_seen() {  # <file>
 
 reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
 
+# Most cases launch a long-lived watcher in the background and reap it at the
+# end of the case. An assertion that fires before that reap exits the script
+# immediately, so the watcher is orphaned - and it inherited this script's
+# stderr, which under bin/fm-test-run.sh is a pipe into the runner's tee. The
+# orphan then holds that pipe open forever and the runner blocks instead of
+# reporting the failure, turning one failed assertion into a hung lane. Reaping
+# whatever is still running on the way out keeps a failure a failure. This
+# replaces lib.sh's own EXIT trap, so it has to call fm_test_cleanup itself (see
+# tests/lib.sh) or the registered temp dirs leak on every run - and it has to do
+# that after the kills, so nothing repopulates a dir as it is being removed.
+trap 'for _bg in $(jobs -p); do kill "$_bg" 2>/dev/null || true; done; fm_test_cleanup' EXIT
+
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
 test_signal_reason_is_actionable_classifier() {
