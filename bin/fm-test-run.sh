@@ -361,6 +361,12 @@ select_lane() {
 }
 
 run_coverage_guard() {
+  # One collation for the whole guard: the lists are produced with `sort` and
+  # then compared with `comm`/`uniq`/`cmp`, so list production and comparison
+  # have to agree. Without this, a default UTF-8 locale sorts with C rules but
+  # compares with UTF-8 rules and comm aborts with "file 2 is not in sorted
+  # order". Exported for the duration of the function so every child sees it.
+  local -x LC_ALL=C
   local tmp missing extra a b
   local -a saved_scripts=()
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-coverage.XXXXXX")

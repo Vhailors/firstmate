@@ -386,6 +386,75 @@ test_portable_shard_union_and_coverage_guard() {
   pass "portable shard union, disjointness, and coverage guard hold"
 }
 
+test_coverage_guard_is_locale_independent() {
+  local utf8 out rc
+  # The guard sorts its lists and then compares them with comm/uniq/cmp, so it
+  # must pin one collation itself. A default UTF-8 locale used to sort with C
+  # rules and compare with UTF-8 rules, and comm aborted with "not in sorted
+  # order" - green in CI's C locale, red on a developer shell.
+  out=$(LC_ALL=C "$RUNNER" --check-coverage 2>&1) || fail "coverage guard failed under LC_ALL=C: $out"
+  assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard marker under LC_ALL=C"
+  # C.UTF-8 still collates by codepoint, so it cannot expose the mismatch - only
+  # a locale with real dictionary collation can.
+  utf8=$(locale -a 2>/dev/null | grep -iE '\.(utf-?8)$' | grep -viE '^(C|POSIX)[.@]' | head -n 1 || true)
+  if [ -z "$utf8" ]; then
+    pass "coverage guard is collation-pinned (LC_ALL=C only; no collating UTF-8 locale on this host)"
+    return 0
+  fi
+  set +e
+  out=$(LC_ALL="$utf8" LANG="$utf8" "$RUNNER" --check-coverage 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "coverage guard failed under $utf8 (rc=$rc): $out"
+  case $out in
+    *'not in sorted order'*) fail "coverage guard hit a collation mismatch under $utf8: $out" ;;
+  esac
+  assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard marker under $utf8"
+  pass "coverage guard pins one collation (green under both C and $utf8)"
+}
+
+test_tmproot_registration_survives_command_substitution() {
+  local tmp probe out rc root during leftovers
+  tmp=$(fm_test_tmproot fm-test-run-tmproot)
+  # Every caller spells this `TMP_ROOT=$(fm_test_tmproot ...)`, so registration
+  # has to cross a command-substitution subshell: the root must survive the
+  # substitution and still be removed when the owning shell exits - on a clean
+  # exit, on a failed assertion, and under a test file's own EXIT trap.
+  for probe in clean failing owntrap; do
+    mkdir -p "$tmp/$probe/tmp"
+    {
+      printf 'set -u\n'
+      printf '. "%s/tests/lib.sh"\n' "$ROOT"
+      [ "$probe" = owntrap ] && printf "trap 'fm_test_cleanup' EXIT\n"
+      printf 'TMP_ROOT=$(fm_test_tmproot probe-%s)\n' "$probe"
+      printf 'mkdir -p "$TMP_ROOT/sub"; : > "$TMP_ROOT/sub/file"\n'
+      printf 'printf "root=%%s\\n" "$TMP_ROOT"\n'
+      printf 'printf "during=%%s\\n" "$([ -d "$TMP_ROOT/sub" ] && echo yes || echo no)"\n'
+      [ "$probe" = failing ] && printf 'fail "forced probe failure"\n'
+      printf 'exit 0\n'
+    } > "$tmp/$probe/probe.sh"
+    set +e
+    out=$(TMPDIR="$tmp/$probe/tmp" bash "$tmp/$probe/probe.sh" 2>&1)
+    rc=$?
+    set -e
+    root=$(printf '%s\n' "$out" | sed -n 's/^root=//p')
+    during=$(printf '%s\n' "$out" | sed -n 's/^during=//p')
+    [ -n "$root" ] || fail "$probe probe printed no temp root: $out"
+    [ "$during" = yes ] \
+      || fail "$probe probe: temp root vanished inside the command substitution"
+    if [ "$probe" = failing ]; then
+      [ "$rc" -ne 0 ] || fail "failing probe was expected to exit non-zero"
+    else
+      [ "$rc" -eq 0 ] || fail "$probe probe exited $rc: $out"
+    fi
+    [ ! -e "$root" ] || fail "$probe probe leaked its temp root $root"
+    leftovers=$(find "$tmp/$probe/tmp" -mindepth 1 2>/dev/null)
+    [ -z "$leftovers" ] \
+      || fail "$probe probe left files behind in TMPDIR: $leftovers"
+  done
+  pass "fm_test_tmproot registers in the owning shell and cleans up on every exit path"
+}
+
 test_jobs_requires_proven_isolated() {
   local tmp rc
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs.XXXXXX")
@@ -579,6 +648,8 @@ test_gate_skip_accounting
 test_fail_on_gate_skip_token
 test_exclude_family
 test_portable_shard_union_and_coverage_guard
+test_coverage_guard_is_locale_independent
+test_tmproot_registration_survives_command_substitution
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
 test_aggregate_json
