@@ -108,20 +108,22 @@ Current known local customization areas, their authoritative owners, and how exp
 | Pi launch-scope facts for agents | [`harness-adapters`](../../.agents/skills/harness-adapters/SKILL.md) | that skill | high; upstream rewrites adapter facts on every harness release |
 | Pi setup and current-behavior prose | [`README.md`](../../README.md), [`docs/configuration.md`](../configuration.md), [`docs/calm.md`](../calm.md) | README for setup routing, `docs/configuration.md` for the schema | high; these paragraphs are where the observed rebase conflicts landed |
 | Pi command shapes inside maintainer verification | [`docs/arm-pretool-check.md`](../arm-pretool-check.md), [`docs/cd-guard.md`](../cd-guard.md), [`docs/verification/supervision.md`](../verification/supervision.md) | each verification document | low to change, but the evidence must be re-run rather than reworded when the launch shape moves |
-| Changed-file test routing for the launcher | one pattern in `bin/fm-test-run.sh` | `bin/fm-test-run.sh --help` | medium; upstream edits the same map when it adds scripts |
-| Explicit do-not-merge enforcement | `bin/fm-merge-authority-lib.sh` plus narrow call sites in the spawn and merge helpers | the library header and `tests/fm-merge-authority.test.sh` | medium; upstream may change spawn metadata or the guarded merge entry points |
+| Test routing for the local customizations | a few lines in `bin/fm-test-run.sh`: the launcher's changed-file family, the merge-authority suite's family, and the `FM_PI_EXTENSION_ISOLATION` environment scrub | `bin/fm-test-run.sh --help` | medium; upstream edits the same maps when it adds scripts |
+| Explicit do-not-merge enforcement | `bin/fm-merge-authority-lib.sh` plus narrow call sites in the spawn, merge, session-start, and re-link helpers | the library header and `tests/fm-merge-authority.test.sh` | medium; upstream may change spawn metadata or the guarded merge entry points |
+| Host-independent and leak-free test fixtures | `tests/lib.sh`'s file-backed cleanup registry, `tests/fm-watch-triage.test.sh`'s reaping EXIT trap, the coverage guard's collation pin in `bin/fm-test-run.sh`, and the host-tool and redraw-timing isolation in `tests/fm-bootstrap.test.sh` and `tests/fm-calm-pi-extension.test.sh` | each script's own comments | medium; these are portability fixes inside upstream files and are upstream-contribution candidates rather than durable local behavior |
 | Local operating choices | gitignored `config/` files and `.env` | [`docs/configuration.md`](../configuration.md) | none; untracked and never rebased |
 | Private fleet records | gitignored `data/`, `state/`, `projects/` | `AGENTS.md` section 2 | none; untracked and never rebased |
 
 The tracked rows above are the whole rebase surface.
 If a future customization does not fit an existing row, add a row here in the same commit that adds the customization, so the inventory never lags the code.
 
-### Dropped customizations
+### Dropped and replaced customizations
 
-A customization the captain asked for and then dropped is recorded here, so a missing row reads as a decision rather than as an accidental omission during a merge (step 2 of the merge procedure).
+A customization the captain asked for and that was then dropped, or replaced by upstream's own version, is recorded here, so a missing row reads as a decision rather than as an accidental omission during a merge (step 2 of the merge procedure).
 
 | Area | Dropped on | Why |
 | --- | --- | --- |
+| Local crew-dispatch routing pins (the `fm/agent-routing-quota-fallback-v1` branch: routing-rule prose in `AGENTS.md`, `docs/configuration.md`, and `docs/examples/crew-dispatch.json`, plus compatibility prose for the old dispatch selector) | 2026-07-30, during the upstream mix | Classified replace: upstream deleted `bin/fm-dispatch-select.sh` and made quota-aware profile-array selection agent-owned through the `quota-array-dispatch` skill and the rewritten `AGENTS.md` section 4, so the local pins describe a selector that no longer exists and would have to be re-expressed against the new mechanism. Left untouched on its branch rather than rebased, so re-expressing any still-wanted routing preference stays a separate captain decision. |
 | Guarded whole-project removal (`bin/fm-project-remove.sh` and its suite, from the `fm/guarded-project-removal-helper-v2` branch) | 2026-07-30, by captain decision during the upstream mix | The deletion-boundary drain refused on every Linux run: it required every same-UID process's `/proc/<pid>` handle roots to be enumerable, which `kernel.yama.ptrace_scope=1` (the default on this host) forbids, so `--confirm` always quarantined the clone and then restored it. Its suite faked `uname` as Darwin and so could not observe the refusal. Excluded rather than weakened, because relaxing the drain would have traded the capability's safety model for its availability; upstream removal behavior is restored and the source branch is left intact for a Linux-correct rework. |
 
 The table is wider than the behavior change that produced it, and that is expected.
@@ -130,14 +132,8 @@ Judge a customization's rebase cost by its behavior rows, not its prose rows: pr
 
 ## Verification
 
-These commands prove that upstream's behavior and the local customizations both still work after a rebase.
-
-```sh
-for script in bin/*.sh bin/backends/*.sh; do bash -n "$script"; done  # toolbelt syntax
-bin/fm-lint.sh                                                       # single lint owner, same as CI
-bin/fm-test-run.sh --changed                                         # changed-file-informed behavior set
-bin/fm-doc-audience-check.sh                                         # prose classification and link targets
-```
+Proving that upstream's behavior and the local customizations both still work after a rebase takes the repo's ordinary pre-push checks, not a separate procedure.
+Run the toolbelt check-and-test block in [`CONTRIBUTING.md`](../../CONTRIBUTING.md), which owns its current form, plus `bin/fm-doc-audience-check.sh` for prose classification and link targets ([`docs/documentation-audiences.md`](../documentation-audiences.md)).
 
 Add the customization's own regression scripts to the same run.
 For the Pi launch-scope area those are:

@@ -102,7 +102,22 @@ prime_turnend_seen() {  # <file>
   printf '%s' "$(seen_sig "$f")" > "$(dirname "$f")/.seen-$base"
 }
 
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+reap() {
+  local pid=$1 tick
+  kill "$pid" 2>/dev/null || true
+  # Bash can defer or lose an EXIT-triggering TERM while unwinding a command
+  # substitution. Never let that turn a test failure into an unbounded wait:
+  # give the watcher a short cleanup window, retry TERM once, then fail closed
+  # by killing only this test-owned child.
+  tick=0
+  while kill -0 "$pid" 2>/dev/null && [ "$tick" -lt 50 ]; do
+    tick=$((tick + 1))
+    [ "$tick" -ne 10 ] || kill "$pid" 2>/dev/null || true
+    sleep 0.1
+  done
+  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
 
 # Most cases launch a long-lived watcher in the background and reap it at the
 # end of the case. An assertion that fires before that reap exits the script
@@ -114,7 +129,31 @@ reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
 # replaces lib.sh's own EXIT trap, so it has to call fm_test_cleanup itself (see
 # tests/lib.sh) or the registered temp dirs leak on every run - and it has to do
 # that after the kills, so nothing repopulates a dir as it is being removed.
-trap 'for _bg in $(jobs -p); do kill "$_bg" 2>/dev/null || true; done; fm_test_cleanup' EXIT
+trap 'for _bg in $(jobs -p); do reap "$_bg"; done; fm_test_cleanup' EXIT
+
+test_reap_retries_a_surviving_term() {
+  local ready pid start elapsed i
+  ready="$TMP_ROOT/reap-retry.ready"
+  bash -c '
+    seen=0
+    trap '"'"'seen=$((seen + 1)); [ "$seen" -lt 2 ] || exit 0'"'"' TERM
+    : >"$1"
+    while :; do sleep 0.1; done
+  ' bash "$ready" &
+  pid=$!
+  i=0
+  while [ ! -e "$ready" ] && [ "$i" -lt 50 ]; do
+    i=$((i + 1))
+    sleep 0.1
+  done
+  [ -e "$ready" ] || { kill -KILL "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fail "reap retry fixture did not start"; }
+  start=$(date +%s)
+  reap "$pid"
+  elapsed=$(( $(date +%s) - start ))
+  [ "$elapsed" -lt 5 ] || fail "reap retry exceeded its bounded TERM-retry window (${elapsed}s)"
+  ! kill -0 "$pid" 2>/dev/null || fail "reap retry left its test-owned child alive"
+  pass "test reap retries TERM and remains bounded when a child survives the first signal"
+}
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
@@ -1551,6 +1590,7 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
   pass "AFK changed paused panes hand off plain stale identities for daemon-owned pause triage"
 }
 
+test_reap_retries_a_surviving_term
 test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
