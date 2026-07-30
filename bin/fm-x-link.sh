@@ -21,6 +21,10 @@
 # window, or a dropped reply-platform context against a binding the relay
 # already knows about. Pass --carry-platform and --carry-max from the prior
 # task's x_platform and x_reply_max_chars when the original inbox file is gone.
+# The successor's merge authority is a separate carry with the same shape: spawn
+# it with fm-spawn.sh --carry-merge-from <prior-task-id> so a recorded
+# do-not-merge constraint moves onto the new id instead of being lost with the
+# prior meta (bin/fm-merge-authority-lib.sh).
 #
 # Fresh-link context resolution fills platform and explicit budget independently
 # through the durable per-request registry, inbox payload, then authoritative

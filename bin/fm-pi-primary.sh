@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Launch a Firstmate primary Pi session with extension discovery disabled and
 # only the tracked turn-end guard and watcher extensions restored explicitly.
+# FM_PI_HARNESS selects plain Pi or the verified pi-signed wrapper without
+# changing the discovery boundary.
 # This keeps user-global extensions available to ordinary `pi` sessions while
 # preventing unrelated packages from colliding with Firstmate's Pi extensions.
 # Every argument is forwarded to Pi unchanged after the required launch flags.
@@ -13,6 +15,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 TURNEND_EXT="$FM_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
 WATCH_EXT="$FM_ROOT/.pi/extensions/fm-primary-pi-watch.ts"
+PI_HARNESS="${FM_PI_HARNESS:-pi}"
+
+case "$PI_HARNESS" in
+  pi|pi-signed) ;;
+  *)
+    printf 'fm-pi-primary: unsupported Pi harness: %s\n' "$PI_HARNESS" >&2
+    exit 1
+    ;;
+esac
 
 for extension in "$TURNEND_EXT" "$WATCH_EXT"; do
   if [ ! -f "$extension" ]; then
@@ -21,10 +32,11 @@ for extension in "$TURNEND_EXT" "$WATCH_EXT"; do
   fi
 done
 
-if ! command -v pi >/dev/null 2>&1; then
-  printf 'fm-pi-primary: pi is not installed or is not on PATH\n' >&2
+if ! command -v "$PI_HARNESS" >/dev/null 2>&1; then
+  printf 'fm-pi-primary: %s is not installed or is not on PATH\n' "$PI_HARNESS" >&2
   exit 1
 fi
 
 export FM_PI_EXTENSION_ISOLATION=1
-exec pi --no-extensions -e "$TURNEND_EXT" -e "$WATCH_EXT" "$@"
+export FM_PI_HARNESS="$PI_HARNESS"
+exec "$PI_HARNESS" --no-extensions -e "$TURNEND_EXT" -e "$WATCH_EXT" "$@"

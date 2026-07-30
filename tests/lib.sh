@@ -53,9 +53,16 @@ pass() {
 # --- self-cleaning temp root ------------------------------------------------
 #
 # fm_test_tmproot <prefix> echoes a fresh temp dir and registers it for removal
-# on EXIT. The first call installs the cleanup trap. A test file that needs
-# extra teardown (e.g. killing a daemon) should define its own EXIT trap and
-# call fm_test_cleanup from inside it so registered dirs are still removed.
+# on EXIT. Callers spell that `TMP_ROOT=$(fm_test_tmproot ...)`, so the function
+# body runs in a command-substitution subshell: an array append made there never
+# reaches the test shell, and a trap installed there fires when the substitution
+# ends, deleting the root it just made. Registration therefore goes through a
+# file-backed registry - a write that does cross the subshell boundary - and the
+# EXIT trap is installed below at source time, in the shell that owns the run.
+# FM_TEST_CLEANUP_DIRS stays supported for callers that append to it directly.
+# A test file that needs extra teardown (e.g. killing a daemon) should define its
+# own EXIT trap and call fm_test_cleanup from inside it so registered dirs are
+# still removed.
 
 FM_TEST_CLEANUP_DIRS=()
 
@@ -64,17 +71,27 @@ fm_test_cleanup() {
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     [ -n "$d" ] && rm -rf "$d"
   done
+  if [ -n "${FM_TEST_CLEANUP_REGISTRY:-}" ] && [ -f "$FM_TEST_CLEANUP_REGISTRY" ]; then
+    while IFS= read -r d; do
+      [ -n "$d" ] && rm -rf "$d"
+    done <"$FM_TEST_CLEANUP_REGISTRY"
+    rm -f "$FM_TEST_CLEANUP_REGISTRY"
+  fi
 }
 
 fm_test_tmproot() {
   local prefix=${1:-fm-test} root
   root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX")
-  if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then
-    trap fm_test_cleanup EXIT
-  fi
-  FM_TEST_CLEANUP_DIRS+=("$root")
+  printf '%s\n' "$root" >>"$FM_TEST_CLEANUP_REGISTRY"
   printf '%s\n' "$root"
 }
+
+# Deliberately not exported: a child process that sources this library gets its
+# own registry, so its exit never removes roots the parent shell is still using.
+if [ -z "${FM_TEST_CLEANUP_REGISTRY:-}" ]; then
+  FM_TEST_CLEANUP_REGISTRY=$(mktemp "${TMPDIR:-/tmp}/fm-test-cleanup.XXXXXX")
+  trap fm_test_cleanup EXIT
+fi
 
 # --- fakebin / PATH shims ---------------------------------------------------
 #
@@ -151,17 +168,20 @@ fm_write_meta() {
   done
 }
 
-# fm_write_secondmate_meta <file> <home> [window] [projects]: write the standard
-# kind=secondmate meta block used across the secondmate suites. window defaults
-# to firstmate:fm-<basename-of-home-dir's parent id>? No - window is explicit;
-# defaults to firstmate:fm-domain and projects to alpha to match the common case.
+# fm_write_secondmate_meta <file> <home> [window] [projects] [harness]: write the
+# standard kind=secondmate meta block used across the secondmate suites. Window
+# defaults to firstmate:fm-<id>, projects defaults to alpha, and harness defaults
+# to echo to match the common case.
 fm_write_secondmate_meta() {
-  local file=$1 home=$2 window=${3:-firstmate:fm-domain} projects=${4:-alpha}
+  local file=$1 home=$2 id window projects=${4:-alpha} harness=${5:-echo}
+  id=$(basename "$file" .meta)
+  window=${3:-firstmate:fm-$id}
   fm_write_meta "$file" \
     "window=$window" \
+    "endpoint_task_id=$id" \
     "worktree=$home" \
     "project=$home" \
-    "harness=echo" \
+    "harness=$harness" \
     "kind=secondmate" \
     "mode=secondmate" \
     "yolo=off" \

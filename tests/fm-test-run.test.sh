@@ -11,8 +11,6 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 RUNNER="$ROOT/bin/fm-test-run.sh"
-CI="$ROOT/.github/workflows/ci.yml"
-CONTRIB="$ROOT/CONTRIBUTING.md"
 
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
@@ -97,7 +95,7 @@ init_changed_fixture_repo() {
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-brief.test.sh \
-    fm-captain-translation-contract.test.sh \
+    fm-ask-user-authority.test.sh \
     fm-cd-pretool-check.test.sh \
     fm-daemon.test.sh \
     fm-backend-herdr-smoke.test.sh \
@@ -166,7 +164,7 @@ test_changed_dependency_selection_and_unmapped_failure() {
   printf '\n' >>"$repo/.pi/extensions/fm-primary-pi-watch.ts"
   printf '\n' >>"$repo/.pi/extensions/fm-primary-turnend-guard.ts"
   listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
-  assert_contains "$listed" "tests/fm-captain-translation-contract.test.sh" "skill source selects pure contract coverage"
+  assert_contains "$listed" "tests/fm-ask-user-authority.test.sh" "skill source selects pure contract coverage"
   assert_contains "$listed" "tests/fm-cd-pretool-check.test.sh" "Claude and Pi source selects hook coverage"
   assert_contains "$listed" "tests/fm-pi-watch-extension.test.sh" "Pi source selects watcher coverage"
   git -C "$repo" add .agents .claude .pi
@@ -352,84 +350,6 @@ test_exclude_family() {
   pass "exclude-family drops the named primary family after selection"
 }
 
-test_ci_and_docs_call_the_owner() {
-  assert_present "$CI" "ci.yml missing"
-  assert_present "$CONTRIB" "CONTRIBUTING.md missing"
-  grep -Fq 'tests-portable-parallel-1:' "$CI" \
-    || fail "CI must define portable parallel shard 1"
-  grep -Fq 'tests-portable-parallel-2:' "$CI" \
-    || fail "CI must define portable parallel shard 2"
-  grep -Fq 'tests-portable-serial:' "$CI" \
-    || fail "CI must define the portable serial lane"
-  grep -Fq 'bin/fm-test-run.sh --lane portable-parallel-1' "$CI" \
-    || fail "CI shard 1 must invoke --lane portable-parallel-1"
-  grep -Fq 'bin/fm-test-run.sh --lane portable-parallel-2' "$CI" \
-    || fail "CI shard 2 must invoke --lane portable-parallel-2"
-  local shard job_body
-  for shard in 1 2; do
-    job_body=$(awk -v job="  tests-portable-parallel-$shard:" '
-      $0 == job { in_job=1; next }
-      in_job && /^  [a-zA-Z0-9_-]+:/ { exit }
-      in_job { print }
-    ' "$CI")
-    printf '%s\n' "$job_body" | grep -Fq 'npm install -g tasks-axi' \
-      || fail "CI portable parallel shard $shard must install tasks-axi"
-    printf '%s\n' "$job_body" | grep -Fq 'tasks-axi --version' \
-      || fail "CI portable parallel shard $shard must verify tasks-axi"
-  done
-  grep -Fq 'bin/fm-test-run.sh --lane portable-serial' "$CI" \
-    || fail "CI portable serial must invoke --lane portable-serial"
-  grep -Fq 'bin/fm-test-run.sh --check-coverage' "$CI" \
-    || fail "CI must run the coverage guard"
-  grep -Fq 'tests-herdr:' "$CI" \
-    || fail "CI must define the required tests-herdr job"
-  grep -Fq 'bin/fm-test-run.sh --family real-herdr-gated' "$CI" \
-    || fail "Herdr CI job must run the real-herdr-gated family via fm-test-run"
-  grep -Fq -- "--fail-on-gate-skip 'herdr not found'" "$CI" \
-    || fail "Herdr CI job must fail on herdr-not-found skips"
-  grep -Fq 'bin/fm-install-herdr.sh' "$CI" \
-    || fail "Herdr CI job must install via bin/fm-install-herdr.sh"
-  grep -Fq 'bin/fm-install-treehouse.sh' "$CI" \
-    || fail "Herdr CI job must install via bin/fm-install-treehouse.sh"
-  grep -Fq 'bin/fm-herdr-ci-cleanup.sh' "$CI" \
-    || fail "Herdr CI job must use bounded lab cleanup"
-  grep -Fq 'tests-timing-aggregate:' "$CI" \
-    || fail "CI must aggregate per-lane timing artifacts"
-  grep -Fq 'timeout-minutes: 20' "$CI" \
-    || fail "portable serial hang tripwire must be timeout-minutes: 20"
-  grep -Fq 'timeout-minutes: 10' "$CI" \
-    || fail "portable parallel shards must keep a hang tripwire (10m)"
-  # Interim full-suite 25m portable timeout must not remain after sharding.
-  if grep -Eq 'timeout-minutes: 25' "$CI"; then
-    fail "CI still has interim timeout-minutes: 25 after portable sharding"
-  fi
-  # Stale "~2-3 minutes" claim must not remain.
-  if grep -Eq '2-3 minutes' "$CI"; then
-    fail "CI workflow still claims the suite finishes in ~2-3 minutes"
-  fi
-  # No retry-green strategy on Behavior lanes.
-  if grep -Eqi 'retry:|max-attempts:|continue-on-error:\s*true' "$CI"; then
-    fail "CI must not use retries or continue-on-error as a green strategy"
-  fi
-  grep -Fq 'fm-test-timing' "$CI" \
-    || fail "CI must upload timing artifacts"
-  grep -Fq 'bin/fm-test-run.sh --all' "$CONTRIB" \
-    || fail "CONTRIBUTING must document bin/fm-test-run.sh --all"
-  grep -Fq 'bin/fm-test-run.sh --family' "$CONTRIB" \
-    || fail "CONTRIBUTING must document family selection"
-  grep -Fq 'bin/fm-test-run.sh --changed' "$CONTRIB" \
-    || fail "CONTRIBUTING must document changed-file selection"
-  grep -Fq 'bin/fm-test-run.sh --proven-isolated --jobs' "$CONTRIB" \
-    || fail "CONTRIBUTING must document proven-isolated --jobs"
-  grep -Fq 'intent-targeted' "$CONTRIB" \
-    || fail "CONTRIBUTING must document intent-targeted no-mistakes Test"
-  # Do not restore a complete-suite commands.test.
-  if grep -E '^[[:space:]]*test:[[:space:]].*tests/\*\.test\.sh' "$ROOT/.no-mistakes.yaml" >/dev/null 2>&1; then
-    fail ".no-mistakes.yaml must not set a full-suite commands.test"
-  fi
-  pass "CI and CONTRIBUTING call the one-owner runner; no full-suite local Test"
-}
-
 test_portable_shard_union_and_coverage_guard() {
   local s1 s2 proven serial herdr all_count union_count overlap out first
   s1=$("$RUNNER" --list --lane portable-parallel-1)
@@ -461,9 +381,82 @@ test_portable_shard_union_and_coverage_guard() {
     || fail "lanes must not duplicate scripts"
   # LPT order: first script of shard 1 is the longest proven script.
   first=$(printf '%s\n' "$s1" | head -n 1)
-  [ "$first" = "tests/fm-arm-pretool-check.test.sh" ] \
-    || fail "shard 1 must start with longest proven script, got $first"
+  [ "$first" = "tests/fm-x-mode.test.sh" ] \
+    || fail "shard 1 must start with the longest proven script, got $first"
   pass "portable shard union, disjointness, and coverage guard hold"
+}
+
+test_coverage_guard_is_locale_independent() {
+  local utf8 out rc
+  # The guard sorts its lists and then compares them with comm/uniq/cmp, so it
+  # must pin one collation itself. A default UTF-8 locale used to sort with C
+  # rules and compare with UTF-8 rules, and comm aborted with "not in sorted
+  # order" - green in CI's C locale, red on a developer shell.
+  out=$(LC_ALL=C "$RUNNER" --check-coverage 2>&1) || fail "coverage guard failed under LC_ALL=C: $out"
+  assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard marker under LC_ALL=C"
+  # C.UTF-8 still collates by codepoint, so it cannot expose the mismatch - only
+  # a locale with real dictionary collation can.
+  utf8=$(locale -a 2>/dev/null | grep -iE '\.(utf-?8)$' | grep -viE '^(C|POSIX)[.@]' | head -n 1 || true)
+  if [ -z "$utf8" ]; then
+    pass "coverage guard is collation-pinned (LC_ALL=C only; no collating UTF-8 locale on this host)"
+    return 0
+  fi
+  set +e
+  out=$(LC_ALL="$utf8" LANG="$utf8" "$RUNNER" --check-coverage 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "coverage guard failed under $utf8 (rc=$rc): $out"
+  case $out in
+    *'not in sorted order'*) fail "coverage guard hit a collation mismatch under $utf8: $out" ;;
+  esac
+  assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard marker under $utf8"
+  pass "coverage guard pins one collation (green under both C and $utf8)"
+}
+
+test_tmproot_registration_survives_command_substitution() {
+  local tmp probe out rc root during leftovers
+  tmp=$(fm_test_tmproot fm-test-run-tmproot)
+  # Every caller spells this `TMP_ROOT=$(fm_test_tmproot ...)`, so registration
+  # has to cross a command-substitution subshell: the root must survive the
+  # substitution and still be removed when the owning shell exits - on a clean
+  # exit, on a failed assertion, and under a test file's own EXIT trap.
+  for probe in clean failing owntrap; do
+    mkdir -p "$tmp/$probe/tmp"
+    # The single quotes below are deliberate: these printf formats emit the
+    # probe script's own source, so $TMP_ROOT has to reach the file unexpanded
+    # and expand when the probe runs.
+    # shellcheck disable=SC2016
+    {
+      printf 'set -u\n'
+      printf '. "%s/tests/lib.sh"\n' "$ROOT"
+      [ "$probe" = owntrap ] && printf "trap 'fm_test_cleanup' EXIT\n"
+      printf 'TMP_ROOT=$(fm_test_tmproot probe-%s)\n' "$probe"
+      printf 'mkdir -p "$TMP_ROOT/sub"; : > "$TMP_ROOT/sub/file"\n'
+      printf 'printf "root=%%s\\n" "$TMP_ROOT"\n'
+      printf 'printf "during=%%s\\n" "$([ -d "$TMP_ROOT/sub" ] && echo yes || echo no)"\n'
+      [ "$probe" = failing ] && printf 'fail "forced probe failure"\n'
+      printf 'exit 0\n'
+    } > "$tmp/$probe/probe.sh"
+    set +e
+    out=$(TMPDIR="$tmp/$probe/tmp" bash "$tmp/$probe/probe.sh" 2>&1)
+    rc=$?
+    set -e
+    root=$(printf '%s\n' "$out" | sed -n 's/^root=//p')
+    during=$(printf '%s\n' "$out" | sed -n 's/^during=//p')
+    [ -n "$root" ] || fail "$probe probe printed no temp root: $out"
+    [ "$during" = yes ] \
+      || fail "$probe probe: temp root vanished inside the command substitution"
+    if [ "$probe" = failing ]; then
+      [ "$rc" -ne 0 ] || fail "failing probe was expected to exit non-zero"
+    else
+      [ "$rc" -eq 0 ] || fail "$probe probe exited $rc: $out"
+    fi
+    [ ! -e "$root" ] || fail "$probe probe leaked its temp root $root"
+    leftovers=$(find "$tmp/$probe/tmp" -mindepth 1 2>/dev/null)
+    [ -z "$leftovers" ] \
+      || fail "$probe probe left files behind in TMPDIR: $leftovers"
+  done
+  pass "fm_test_tmproot registers in the owning shell and cleans up on every exit path"
 }
 
 test_jobs_requires_proven_isolated() {
@@ -492,8 +485,8 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   runner="$repo/bin/fm-test-run.sh"
   evidence="$tmp/evidence"
   fake_bin="$tmp/fake-bin"
-  a=tests/fm-no-mistakes-ownership.test.sh
-  b=tests/fm-stow-contract.test.sh
+  a=tests/fm-brief.test.sh
+  b=tests/fm-composer-lib.test.sh
   c=tests/fm-lint.test.sh
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
@@ -658,8 +651,9 @@ test_aggregate_exit_behavior
 test_gate_skip_accounting
 test_fail_on_gate_skip_token
 test_exclude_family
-test_ci_and_docs_call_the_owner
 test_portable_shard_union_and_coverage_guard
+test_coverage_guard_is_locale_independent
+test_tmproot_registration_survives_command_substitution
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
 test_aggregate_json

@@ -54,6 +54,10 @@
       "target": "docs/documentation-audiences.json"
     },
     {
+      "source": "CONTRIBUTING.md",
+      "target": "docs/adr/0001-upstream-compatible-local-customization.md"
+    },
+    {
       "source": "docs/calm.md",
       "target": "docs/calm-mode-feasibility.md"
     },
@@ -156,6 +160,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/quota-array-dispatch/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/secondmate-provisioning/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -186,6 +194,10 @@
     {
       "path": "README.md",
       "audience": "public-product"
+    },
+    {
+      "path": "docs/adr/0001-upstream-compatible-local-customization.md",
+      "audience": "maintainer-architecture"
     },
     {
       "path": "docs/architecture.md",
