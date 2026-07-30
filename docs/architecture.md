@@ -198,6 +198,8 @@ The helper requires a full `https://github.com/<owner>/<repo>/pull/<n>` URL, inv
 Both merge actions first consult the task's durable merge authority, the `merge=` field written by `bin/fm-spawn.sh --no-merge` and owned by [`bin/fm-merge-authority-lib.sh`](../bin/fm-merge-authority-lib.sh), so a lane the captain restricted to a reviewable PR refuses before any metadata, poll, forge call, or git state changes.
 Absent `merge=` means merging is allowed, an unrecognized or valueless field refuses, and only a leading `--captain-authorized` lifts a recorded block; green checks, a completed validation run, and an observed merged PR deliberately do not.
 Because every launch rewrites the whole task meta, the same library resolves what a rewrite must record: a recorded block is carried onto each respawn, an unreadable existing record refuses the respawn, and `bin/fm-spawn.sh --captain-authorized` is the only thing that clears it.
+That rewrite is published atomically through a staged sibling file and a rename, so a torn write cannot leave a record whose missing `merge=` line reads as permission.
+A recovery that continues one lane under a successor task id passes `bin/fm-spawn.sh --carry-merge-from <predecessor-task-id>`, which reads the predecessor's recorded value through the same library and refuses the successor launch when that record cannot be read; the carry never lifts, so it is refused alongside `--captain-authorized`.
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
 

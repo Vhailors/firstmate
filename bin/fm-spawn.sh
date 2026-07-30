@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--scout] [--no-merge|--captain-authorized]
+# Usage: fm-spawn.sh <task-id> <project-dir> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--scout] [--no-merge|--captain-authorized] [--carry-merge-from <predecessor-task-id>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
@@ -18,7 +18,18 @@
 #   merge. --captain-authorized is the only thing that lifts it, and it records
 #   merge=allowed so the lift is durable too; passing both flags is refused.
 #   A respawn whose existing meta records a merge authority that cannot be read
-#   refuses before any launch rather than rewriting it as permission.
+#   refuses before any launch rather than rewriting it as permission. The whole
+#   meta is published atomically (staged sibling file plus rename), so a torn
+#   write can never drop merge= and read as permission afterwards.
+#   --carry-merge-from <predecessor-task-id> is the same durability for the OTHER
+#   documented recovery shape: a recovery that re-links one request onto a
+#   SUCCESSOR task id (see bin/fm-x-link.sh's --carry-count/--carry-ts pair)
+#   starts from a fresh meta, so the caller names the predecessor and its
+#   recorded block is carried onto this launch. The predecessor's record is read
+#   through bin/fm-merge-authority-lib.sh; one that cannot be read refuses the
+#   successor launch rather than starting it unconstrained. It carries only - it
+#   never lifts, so passing it with --captain-authorized is refused, and it is
+#   not a shared batch axis because it names exactly one predecessor lane.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
 #   axes chosen by firstmate at intake. They are only threaded into harnesses whose
 #   installed CLIs were verified to support that axis; unsupported axes are omitted
@@ -103,6 +114,7 @@
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
 #   source of truth; shared --scout/--harness/--model/--effort/--backend/--no-merge applies to every pair.
+#   --carry-merge-from is refused for a batch: it names one predecessor lane, not an axis.
 #   If config/crew-dispatch.json exists, shared --harness is required for crewmate
 #   and scout batches. The loop lives here, in bash, so callers never hand-write a
 #   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
@@ -132,7 +144,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-  sed -n '2,92p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,103p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in
@@ -189,6 +201,8 @@ fm_refuse_if_gate_agent
 KIND=ship
 MERGE_AUTHORITY=
 MERGE_LIFT=0
+MERGE_CARRY_FROM=
+MERGE_CARRY_SET=0
 HARNESS_ARG=
 MODEL=
 EFFORT=
@@ -209,6 +223,7 @@ for a in "$@"; do
       model) MODEL=$a; MODEL_SET=1 ;;
       effort) EFFORT=$a; EFFORT_SET=1 ;;
       backend) BACKEND_ARG=$a; BACKEND_SET=1 ;;
+      carry-merge-from) MERGE_CARRY_FROM=$a; MERGE_CARRY_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -219,6 +234,8 @@ for a in "$@"; do
     --secondmate) KIND=secondmate ;;
     --no-merge) MERGE_AUTHORITY=blocked ;;
     --captain-authorized) MERGE_LIFT=1 ;;
+    --carry-merge-from) want_value=carry-merge-from ;;
+    --carry-merge-from=*) MERGE_CARRY_FROM=${a#--carry-merge-from=}; MERGE_CARRY_SET=1 ;;
     --harness) want_value=harness ;;
     --harness=*) HARNESS_ARG=${a#--harness=}; HARNESS_SET=1 ;;
     --model) want_value=model ;;
@@ -233,6 +250,16 @@ done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
 [ "$MERGE_LIFT" -eq 0 ] || [ -z "$MERGE_AUTHORITY" ] \
   || { echo "error: --no-merge and --captain-authorized contradict each other; pass exactly one" >&2; exit 1; }
+# --carry-merge-from names the predecessor whose recorded constraint this
+# successor task must inherit, so asking to lift on the same invocation is the
+# same contradiction as --no-merge with --captain-authorized: it would turn a
+# carry into a channel that clears a block. Only a lift without a carry lifts.
+[ "$MERGE_LIFT" -eq 0 ] || [ -z "$MERGE_CARRY_FROM" ] \
+  || { echo "error: --carry-merge-from and --captain-authorized contradict each other; carry the predecessor's constraint or lift it, not both" >&2; exit 1; }
+if [ "$MERGE_CARRY_SET" -eq 1 ]; then
+  fm_pr_task_id_valid "$MERGE_CARRY_FROM" \
+    || { echo "error: --carry-merge-from needs a valid predecessor task id" >&2; exit 1; }
+fi
 [ "$HARNESS_SET" -eq 0 ] || [ -n "$HARNESS_ARG" ] || { echo "error: --harness requires a non-empty value" >&2; exit 1; }
 [ "$MODEL_SET" -eq 0 ] || [ -n "$MODEL" ] || { echo "error: --model requires a non-empty value" >&2; exit 1; }
 [ "$EFFORT_SET" -eq 0 ] || [ -n "$EFFORT" ] || { echo "error: --effort requires a non-empty value" >&2; exit 1; }
@@ -280,6 +307,36 @@ SPAWN_TASK_LOCK=
 SPAWN_TASK_LOCK_HELD=0
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+SPAWN_META_TMP=
+
+# Every whole-meta write below publishes through a sibling temp file plus a
+# rename, so no reader can ever observe a partially written record. A plain
+# redirect truncates the live file first, so a full disk or a crash between the
+# first line and the last leaves a meta that parses cleanly but is missing every
+# field after the tear - including merge=, whose absence means "merging is
+# allowed" (bin/fm-merge-authority-lib.sh). A rename is atomic, so the durable
+# constraint either survives intact as the previous record or is replaced whole.
+spawn_meta_tmp() {  # <meta-path> -> echoes a sibling temp path
+  local meta=$1 dir base
+  dir=${meta%/*}
+  base=${meta##*/}
+  [ "$dir" != "$meta" ] || dir=.
+  [ -d "$dir" ] || return 1
+  mktemp "$dir/.${base}.fm-spawn.XXXXXX"
+}
+
+# Rename a staged record over the live meta. The target must be absent or a
+# regular file: renaming onto a directory would move the staged file INTO it and
+# report success, publishing nothing, and a symlinked meta is already refused by
+# every reader (bin/fm-merge-authority-lib.sh). Both are refused so a publication
+# that cannot happen fails loudly instead of silently leaving no record.
+spawn_meta_publish() {  # <meta-path> <staged-path>
+  local meta=$1 tmp=$2
+  if [ -e "$meta" ] || [ -L "$meta" ]; then
+    [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  fi
+  mv -f "$tmp" "$meta"
+}
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -300,6 +357,13 @@ parse_orca_worktree_result() {
 
 spawn_abort_cleanup() {
   local status=$?
+  local leak_tmp
+  # An abort before the rename leaves the previous record in place; the staged
+  # replacement is discarded rather than left behind in state/.
+  if [ -n "$SPAWN_META_TMP" ]; then
+    rm -f "$SPAWN_META_TMP"
+    SPAWN_META_TMP=
+  fi
   if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ] \
      && [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" != 1 ]; then
     if ! spawn_herdr_presentation_order_lock_acquire "${HERDR_PROJECTION_ABORT_SESSION:-}"; then
@@ -326,8 +390,10 @@ spawn_abort_cleanup() {
     if [ -n "${ORCA_WORKTREE_ID:-}" ]; then
       if ! fm_backend_remove_worktree orca "$ORCA_WORKTREE_ID" 2>/dev/null; then
         mkdir -p "$STATE" 2>/dev/null || true
-        if [ -d "$STATE" ]; then
-          {
+        if [ -d "$STATE" ] && leak_tmp=$(spawn_meta_tmp "$STATE/$ID.meta" 2>/dev/null); then
+          # Staged and renamed like the launch write: a leak record torn halfway
+          # through must not replace a recorded constraint with a shorter one.
+          if {
             echo "window=$W"
             echo "worktree=${WT:-}"
             echo "project=$PROJ_ABS"
@@ -345,7 +411,11 @@ spawn_abort_cleanup() {
             echo "backend=orca"
             echo "orca_worktree_id=$ORCA_WORKTREE_ID"
             [ -z "${ORCA_TERMINAL:-}" ] || echo "terminal=$ORCA_TERMINAL"
-          } > "$STATE/$ID.meta" 2>/dev/null || true
+          } > "$leak_tmp" 2>/dev/null; then
+            spawn_meta_publish "$STATE/$ID.meta" "$leak_tmp" 2>/dev/null || rm -f "$leak_tmp"
+          else
+            rm -f "$leak_tmp"
+          fi
         fi
       fi
     fi
@@ -401,6 +471,13 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
     echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
     exit 1
   fi
+  # A carry names ONE predecessor lane, so it can never be a shared batch axis:
+  # fanning it across every pair would either mis-attribute one lane's captain
+  # constraint to unrelated tasks or silently drop it.
+  if [ -n "$MERGE_CARRY_FROM" ]; then
+    echo "error: --carry-merge-from names one predecessor task, so it cannot be a shared batch axis; spawn the recovery successor on its own" >&2
+    exit 1
+  fi
   rc=0
   shared_args=()
   [ -z "$HARNESS_ARG" ] || shared_args+=(--harness "$HARNESS_ARG")
@@ -441,6 +518,30 @@ SPAWN_TASK_LOCK_HELD=1
 # record) publish the carried-forward value rather than this invocation's flags
 # alone. Held under the task lock, so a concurrent same-id spawn cannot read the
 # constraint while another rewrite is replacing it.
+#
+# A recovery that keeps the task id needs nothing else: the resolve below reads
+# this id's own record. The other documented recovery shape re-links the same
+# request onto a SUCCESSOR task id (bin/fm-x-link.sh's --carry-count/--carry-ts
+# pair), and that successor's fresh meta records nothing, so the predecessor's
+# constraint would be gone. --carry-merge-from is the explicit, validated carry
+# for exactly that shape: the caller names the predecessor, this reads its
+# recorded value through the same library, and a predecessor whose record cannot
+# be read refuses the successor launch instead of starting it unconstrained.
+# Nothing is inferred: no task id other than the named predecessor is consulted.
+if [ -n "$MERGE_CARRY_FROM" ]; then
+  if [ "$MERGE_CARRY_FROM" = "$ID" ]; then
+    echo "error: --carry-merge-from names this same task id; a respawn of one id already carries its own recorded merge authority" >&2
+    exit 1
+  fi
+  if ! MERGE_CARRIED=$(fm_merge_authority_value "$STATE/$MERGE_CARRY_FROM.meta"); then
+    echo "error: predecessor task $MERGE_CARRY_FROM records a merge authority that cannot be read; refusing to launch $ID unconstrained (pass --no-merge explicitly if the lane is blocked)" >&2
+    exit 1
+  fi
+  if [ "$MERGE_CARRIED" != allowed ]; then
+    MERGE_AUTHORITY=$MERGE_CARRIED
+    echo "note: carrying merge=$MERGE_CARRIED from predecessor task $MERGE_CARRY_FROM onto $ID (bin/fm-merge-authority-lib.sh)" >&2
+  fi
+fi
 MERGE_REQUESTED=$MERGE_AUTHORITY
 if ! MERGE_AUTHORITY=$(fm_merge_authority_resolve "$STATE/$ID.meta" "$MERGE_REQUESTED" "$MERGE_LIFT"); then
   echo "error: existing metadata for $ID records a merge authority that cannot be read; refusing to respawn rather than rewriting it as permission" >&2
@@ -1505,6 +1606,10 @@ fi
 
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
+SPAWN_META_TMP=$(spawn_meta_tmp "$STATE/$ID.meta") || {
+  echo "error: task metadata for $ID could not be staged for atomic publication" >&2
+  exit 1
+}
 {
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
@@ -1549,7 +1654,12 @@ META_WINDOW=$T
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
-} > "$STATE/$ID.meta"
+} > "$SPAWN_META_TMP"
+spawn_meta_publish "$STATE/$ID.meta" "$SPAWN_META_TMP" || {
+  echo "error: task metadata for $ID could not be published; the previous record is unchanged" >&2
+  exit 1
+}
+SPAWN_META_TMP=
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")

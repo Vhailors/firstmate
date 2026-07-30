@@ -15,9 +15,12 @@
 #   blocked   both firstmate merge actions refuse this task
 # Any other value is unrecognized and refuses, so a corrupted, truncated, or
 # future field can never be read as permission. A merge= line with no value at
-# all is corruption rather than a recorded decision - no writer produces it, and
-# the meta is written with a plain redirect that a full disk or a crash can
-# truncate mid-line - so it is reported as an unreadable record, not as absence.
+# all is corruption rather than a recorded decision - no writer produces it - so
+# it is reported as an unreadable record, not as absence. Whole-meta rewrites
+# publish atomically (bin/fm-spawn.sh stages a sibling file and renames it), so
+# no reader observes a half-written record in the first place; this branch is the
+# backstop for a record damaged some other way, since absent merge= legitimately
+# means "allowed" and a tear that removed the line would otherwise read as one.
 #
 # The block is lifted only by an explicit per-merge --captain-authorized on the
 # invocation. It is deliberately NOT lifted by yolo, by validation completing,
@@ -27,7 +30,10 @@
 # bin/fm-spawn.sh --no-merge is the only writer of merge=blocked, and
 # fm_merge_authority_resolve below is the one rule every rewrite of an existing
 # task's meta follows, so a recorded block survives a respawn that simply did
-# not repeat the flag.
+# not repeat the flag. A recovery that continues one lane under a SUCCESSOR task
+# id reads the predecessor's value through this library too, via fm-spawn's
+# explicit --carry-merge-from, so the new id starts constrained rather than with
+# an empty record.
 
 # Echo the task's recorded merge authority, defaulting to "allowed" when the
 # field is absent. Returns 1 when the record cannot be read at all or carries a

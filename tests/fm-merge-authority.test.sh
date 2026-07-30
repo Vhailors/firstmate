@@ -31,6 +31,11 @@
 #   (p) a recovery respawn that omits --no-merge keeps the block, an explicit
 #       fm-spawn --captain-authorized lifts it, and an unreadable existing
 #       record refuses the respawn outright
+#   (q) a recovery that continues the lane under a SUCCESSOR task id carries the
+#       predecessor's block through --carry-merge-from, refuses when that record
+#       cannot be read, and never doubles as a lift
+#   (r) the launch meta is published atomically, so a torn rewrite cannot leave a
+#       record whose missing merge= line reads as permission
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -592,8 +597,240 @@ test_respawn_keeps_block_until_explicitly_lifted() {
   pass "a recovery respawn keeps merge=blocked, only an explicit lift clears it, and an unreadable record refuses"
 }
 
+# --- (q)(r) the successor-id recovery shape and atomic publication ----------
+
+# These two cases need a spawn that runs all the way through metadata
+# publication, so the fake tmux from tests/fm-spawn-dispatch-profile.test.sh is
+# reused here: it answers the container/window sequence and swallows the typed
+# launch command, and the worktree is a real isolated git worktree reported
+# through the pane path. Nothing real is launched.
+make_full_spawn_case() {  # <name> <task-id>... -> echoes <home>|<proj>|<fakebin>
+  local name=$1 case_dir home proj wt fakebin id
+  shift
+  case_dir="$TMP_ROOT/$name"
+  home="$case_dir/home"
+  proj="$case_dir/project"
+  wt="$case_dir/wt"
+  fakebin=$(fm_fakebin "$case_dir/fake")
+  mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
+  printf 'claude\n' > "$home/config/crew-harness"
+  touch "$home/state/.last-watcher-beat"
+  fm_git_worktree "$proj" "$wt" "wt-$name"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+esac
+case "${1:-}" in
+  display-message) printf 'firstmate\n'; exit 0 ;;
+  list-windows) exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  fm_fake_exit0 "$fakebin" treehouse
+  for id in "$@"; do
+    mkdir -p "$home/data/$id"
+    printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  done
+  printf '%s\n' "$home|$proj|$wt|$fakebin"
+}
+
+read_full_spawn_case() {
+  IFS='|' read -r FULL_HOME FULL_PROJ FULL_WT FULL_FAKEBIN <<EOF
+$1
+EOF
+}
+
+run_full_spawn() {
+  FM_ROOT_OVERRIDE='' FM_HOME="$FULL_HOME" \
+    FM_STATE_OVERRIDE="$FULL_HOME/state" FM_DATA_OVERRIDE="$FULL_HOME/data" \
+    FM_PROJECTS_OVERRIDE="$FULL_HOME/projects" FM_CONFIG_OVERRIDE="$FULL_HOME/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$FULL_WT" TMUX="fake,1,0" \
+    FM_BACKEND=tmux CLAUDE_CONFIG_DIR='' PATH="$FULL_FAKEBIN:$PATH" \
+    "$ROOT/bin/fm-spawn.sh" "$@" 2>&1
+}
+
+# The refusal both merge actions apply, asked directly of one published meta.
+assert_meta_refuses_merge() {
+  local meta=$1 id=$2 label=$3 rc=0 err
+  err="$meta.refusal"
+  set +e
+  bash -c '
+    set -u
+    . "$1"
+    fm_merge_authority_check "$2" "$3" 0
+  ' bash "$ROOT/bin/fm-merge-authority-lib.sh" "$meta" "$id" > /dev/null 2> "$err"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "$label: the published meta did not refuse a merge"
+  assert_grep "REFUSED: task $id was dispatched with merge=blocked" "$err" \
+    "$label: the refusal did not name the carried constraint"
+}
+
+test_successor_task_id_carries_predecessor_block() {
+  local rec out rc pred succ pred_meta succ_meta
+  pred='pred-lane-a1'
+  succ='succ-lane-b2'
+  rec=$(make_full_spawn_case successor-carry "$pred" "$succ")
+  read_full_spawn_case "$rec"
+  pred_meta="$FULL_HOME/state/$pred.meta"
+  succ_meta="$FULL_HOME/state/$succ.meta"
+
+  out=$(run_full_spawn "$pred" "$FULL_PROJ" --no-merge)
+  rc=$?
+  expect_code 0 "$rc" "successor-carry: the predecessor spawn should succeed"$'\n'"$out"
+  assert_grep 'merge=blocked' "$pred_meta" \
+    "successor-carry: the predecessor spawn did not record the block"
+
+  # The shape bin/fm-x-link.sh documents: the SAME request continues on a new
+  # task id. The successor's meta is fresh, so without an explicit carry the
+  # captain's constraint would simply be gone.
+  out=$(run_full_spawn "$succ" "$FULL_PROJ" --carry-merge-from "$pred")
+  rc=$?
+  expect_code 0 "$rc" "successor-carry: the successor spawn should succeed"$'\n'"$out"
+  assert_contains "$out" "carrying merge=blocked from predecessor task $pred onto $succ" \
+    "successor-carry: the carried constraint was not reported"
+  assert_grep 'merge=blocked' "$succ_meta" \
+    "successor-carry: the successor's published meta dropped the predecessor's block"
+  assert_meta_refuses_merge "$succ_meta" "$succ" successor-carry
+  pass "a recovery successor task id carries the predecessor's merge block onto its own meta"
+}
+
+test_successor_carry_of_unconstrained_lane_records_nothing() {
+  local rec out rc pred succ
+  pred='open-lane-c3'
+  succ='open-succ-d4'
+  rec=$(make_full_spawn_case successor-carry-open "$pred" "$succ")
+  read_full_spawn_case "$rec"
+
+  out=$(run_full_spawn "$pred" "$FULL_PROJ")
+  rc=$?
+  expect_code 0 "$rc" "successor-carry-open: the predecessor spawn should succeed"$'\n'"$out"
+
+  # Carrying from an unconstrained lane must stay byte-identical to an ordinary
+  # spawn: the carry moves a recorded constraint, it does not invent one.
+  out=$(run_full_spawn "$succ" "$FULL_PROJ" --carry-merge-from "$pred")
+  rc=$?
+  expect_code 0 "$rc" "successor-carry-open: the successor spawn should succeed"$'\n'"$out"
+  assert_not_contains "$out" 'carrying merge=' \
+    "successor-carry-open: an unconstrained predecessor reported a carried constraint"
+  assert_no_grep 'merge=' "$FULL_HOME/state/$succ.meta" \
+    "successor-carry-open: carrying from an unconstrained lane wrote a merge= field"
+  pass "carrying from a lane with no recorded constraint records no merge= field"
+}
+
+# The dangerous rewrite is the one that never finishes: a plain redirect
+# truncates the live meta first, so a crash or a full disk between the first line
+# and merge= leaves a record that parses cleanly and, with merge= gone, reads as
+# permission. Publication is therefore staged and renamed. A hard link taken
+# before the respawn still names the OLD inode afterwards, which is only true if
+# the record was replaced rather than rewritten in place.
+test_launch_meta_is_published_atomically() {
+  local rec out rc id meta snapshot before leftover
+  id='atomic-meta-e5'
+  rec=$(make_full_spawn_case atomic-meta "$id")
+  read_full_spawn_case "$rec"
+  meta="$FULL_HOME/state/$id.meta"
+
+  out=$(run_full_spawn "$id" "$FULL_PROJ" --no-merge)
+  rc=$?
+  expect_code 0 "$rc" "atomic-meta: the first spawn should succeed"$'\n'"$out"
+  assert_grep 'merge=blocked' "$meta" "atomic-meta: the first spawn did not record the block"
+  snapshot="$FULL_HOME/state/link-snapshot"
+  ln "$meta" "$snapshot"
+  before=$(cat "$snapshot")
+
+  out=$(run_full_spawn "$id" "$FULL_PROJ")
+  rc=$?
+  expect_code 0 "$rc" "atomic-meta: the respawn should succeed"$'\n'"$out"
+
+  [ ! "$meta" -ef "$snapshot" ] \
+    || fail "atomic-meta: the respawn rewrote the live meta in place instead of renaming a staged record over it"
+  [ "$(cat "$snapshot")" = "$before" ] \
+    || fail "atomic-meta: the previous record was mutated by the respawn"
+  assert_grep 'merge=blocked' "$meta" "atomic-meta: the republished meta dropped the carried block"
+  leftover=$(find "$FULL_HOME/state" -maxdepth 1 -name '.*.meta.fm-spawn.*' | wc -l | tr -d ' ')
+  [ "$leftover" = 0 ] \
+    || fail "atomic-meta: publication left $leftover staged meta file(s) behind in state/"
+  pass "the launch meta is published by rename, so a torn rewrite cannot drop the recorded block"
+}
+
+test_successor_carry_fails_closed_and_never_lifts() {
+  local home meta out rc
+  home="$TMP_ROOT/carry-guards"
+  mkdir -p "$home/state" "$home/data" "$home/projects/alpha"
+  meta="$home/state/task-pred-f6.meta"
+
+  # A predecessor whose record cannot be read must refuse the successor launch
+  # rather than start the lane unconstrained.
+  fm_write_meta "$meta" "kind=ship" "merge="
+  set +e
+  out=$(run_spawn_respawn "$home" task-succ-g7 projects/alpha pi --carry-merge-from task-pred-f6)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "carry-unreadable: an unreadable predecessor record must refuse the successor"
+  assert_contains "$out" 'records a merge authority that cannot be read; refusing to launch task-succ-g7 unconstrained' \
+    "carry-unreadable: an unreadable predecessor record did not refuse the successor launch"
+  assert_not_contains "$out" 'no brief at' \
+    "carry-unreadable: the refusal came after the spawn had already proceeded"
+
+  # A predecessor with no record at all is the same fail-closed case: the caller
+  # named a lane whose constraint cannot be established.
+  rm -f "$meta"
+  set +e
+  out=$(run_spawn_respawn "$home" task-succ-g7 projects/alpha pi --carry-merge-from task-pred-f6)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "carry-missing: a missing predecessor record must refuse the successor"
+  assert_contains "$out" 'records a merge authority that cannot be read' \
+    "carry-missing: a missing predecessor record did not refuse the successor launch"
+
+  # The carry is not a second lift channel.
+  fm_write_meta "$meta" "kind=ship" "merge=blocked"
+  set +e
+  out=$(run_spawn_respawn "$home" task-succ-g7 projects/alpha pi --carry-merge-from task-pred-f6 --captain-authorized)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "carry-lift: carrying and lifting on one invocation must be refused"
+  assert_contains "$out" '--carry-merge-from and --captain-authorized contradict each other' \
+    "carry-lift: the carry doubled as a lift"
+
+  # An unsafe or self-referential predecessor id is refused before anything runs.
+  set +e
+  out=$(run_spawn_respawn "$home" task-succ-g7 projects/alpha pi --carry-merge-from ../escape)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "carry-unsafe: an unsafe predecessor id must be refused"
+  assert_contains "$out" '--carry-merge-from needs a valid predecessor task id' \
+    "carry-unsafe: an unsafe predecessor id was accepted"
+
+  set +e
+  out=$(run_spawn_respawn "$home" task-succ-g7 projects/alpha pi --carry-merge-from task-succ-g7)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "carry-self: naming this same task id must be refused"
+  assert_contains "$out" 'names this same task id' \
+    "carry-self: a self-referential carry was accepted"
+
+  # One predecessor lane is never a shared batch axis.
+  set +e
+  out=$(run_spawn_respawn "$home" a-one-h8=projects/alpha b-two-j9=projects/alpha --carry-merge-from task-pred-f6)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "carry-batch: --carry-merge-from must be refused for a batch"
+  assert_contains "$out" 'cannot be a shared batch axis' \
+    "carry-batch: --carry-merge-from was accepted as a batch axis"
+  pass "the successor carry fails closed on an unreadable predecessor and never lifts or fans out"
+}
+
 test_spawn_flag_records_blocked
 test_ordinary_spawn_records_no_merge_field
+test_successor_task_id_carries_predecessor_block
+test_successor_carry_of_unconstrained_lane_records_nothing
+test_successor_carry_fails_closed_and_never_lifts
+test_launch_meta_is_published_atomically
 test_valueless_authority_refuses
 test_rewrite_carries_constraint_forward
 test_respawn_keeps_block_until_explicitly_lifted

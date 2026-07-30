@@ -290,6 +290,7 @@ Never merge a red PR.
 Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
 When the captain restricts a lane to a reviewable PR only, spawn it with `bin/fm-spawn.sh --no-merge` so both merge paths refuse it; a do-not-merge line in the brief instructs that worker and constrains nothing else.
 A recorded block survives every later respawn of that task id, including recovery, and is lifted only by an explicit `--captain-authorized` invocation.
+When a recovery continues that lane under a new task id instead, spawn the successor with `bin/fm-spawn.sh --carry-merge-from <predecessor-task-id>` so the block moves with the lane; the successor launch refuses if the predecessor's record cannot be read.
 After an autonomous merge, give the captain a one-line full-URL or local-main outcome.
 
 ### Validate
