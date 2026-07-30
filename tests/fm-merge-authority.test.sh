@@ -25,6 +25,12 @@
 #   (k) fm-merge-local refuses a merge=blocked local-only task before touching git
 #   (l) an unreadable task meta refuses instead of reading as "no constraint"
 #   (m) a metadata read error refuses instead of reading as "no constraint"
+#   (n) a valueless merge= field refuses instead of reading as an absent field
+#   (o) a metadata rewrite carries a recorded constraint forward, and only an
+#       explicit lift on that invocation clears it
+#   (p) a recovery respawn that omits --no-merge keeps the block, an explicit
+#       fm-spawn --captain-authorized lifts it, and an unreadable existing
+#       record refuses the respawn outright
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -423,8 +429,174 @@ test_merge_local_refuses_blocked_task() {
   pass "fm-merge-local refuses a blocked task before touching git and lands once authorized"
 }
 
+# --- (n) a truncated field is corruption, not absence ------------------------
+
+# The meta is written with a plain redirect, so a full disk or a crash can leave
+# the line as a bare "merge=". No writer produces that, and reading it as the
+# absent-field default would merge a task whose recorded value was blocked.
+test_valueless_authority_refuses() {
+  local case_dir rc
+  case_dir=$(make_case valueless "merge=")
+
+  set +e
+  run_pr_merge "$case_dir" task-nm https://github.com/example/repo/pull/167 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "valueless: a merge= line with no value must refuse"
+  assert_grep 'merge authority for task task-nm could not be read' "$case_dir/stderr" \
+    "valueless: a truncated field was not reported as unreadable"
+  assert_no_merge_attempted "$case_dir" valueless
+  pass "a valueless merge= field refuses instead of reading as an absent field"
+}
+
+# --- (o) what one metadata rewrite must record ------------------------------
+
+run_resolve() {
+  bash -c '
+    set -u
+    . "$1"
+    fm_merge_authority_resolve "$2" "$3" "$4"
+  ' bash "$ROOT/bin/fm-merge-authority-lib.sh" "$1" "$2" "$3"
+}
+
+# Every launch rewrites the whole meta, so the rewrite rule - not the caller's
+# flags - is what makes the constraint durable. Each row:
+#   <label>|<recorded merge line or "-">|<requested>|<lift 0|1>|<expected exit>|<expected value>
+test_rewrite_carries_constraint_forward() {
+  local label recorded requested lift code expected dir meta out rc
+  while IFS='|' read -r label recorded requested lift code expected; do
+    [ -n "$label" ] || continue
+    dir="$TMP_ROOT/resolve-$label"
+    mkdir -p "$dir"
+    meta="$dir/task-nm.meta"
+    if [ "$recorded" = - ]; then
+      rm -f "$meta"
+    else
+      fm_write_meta "$meta" "kind=ship" "$recorded"
+    fi
+    set +e
+    out=$(run_resolve "$meta" "$requested" "$lift")
+    rc=$?
+    set -e
+    expect_code "$code" "$rc" "resolve-$label"
+    [ "$code" != 0 ] || [ "$out" = "$expected" ] \
+      || fail "resolve-$label: expected '$expected', got '$out'"
+  done <<'ROWS'
+respawn-without-flag-keeps-block|merge=blocked||0|0|blocked
+respawn-with-flag-keeps-block|merge=blocked|blocked|0|0|blocked
+explicit-lift-clears-block|merge=blocked||1|0|allowed
+unrecognized-value-carried|merge=probably-fine||0|0|probably-fine
+recorded-allowed-needs-no-line|merge=allowed||0|0|
+fresh-spawn-records-nothing|-||0|0|
+fresh-spawn-records-request|-|blocked|0|0|blocked
+valueless-record-refuses|merge=||0|1|
+ROWS
+
+  # A carried value must still be the value the merge actions refuse on, and a
+  # lifted one must be the value they accept.
+  local blocked_dir allowed_dir
+  blocked_dir=$(make_case resolve-carried "merge=blocked")
+  set +e
+  run_pr_merge "$blocked_dir" task-nm https://github.com/example/repo/pull/167 \
+    > "$blocked_dir/stdout" 2> "$blocked_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "resolve-carried: a carried-forward block must still refuse"
+  allowed_dir=$(make_case resolve-lifted "merge=allowed")
+  set +e
+  run_pr_merge "$allowed_dir" task-nm https://github.com/example/repo/pull/167 \
+    > "$allowed_dir/stdout" 2> "$allowed_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "resolve-lifted: a recorded lift must merge normally"
+  pass "a metadata rewrite carries a recorded constraint forward and only an explicit lift clears it"
+}
+
+# --- (p) the respawn path is wired to that rule -----------------------------
+
+# fm-spawn is driven for real here, but stops at its missing-brief check, which
+# is reached after the merge authority is resolved and before any backend,
+# worktree, or meta write. So the resolution the respawn would publish is
+# decidable from stderr without creating a window.
+run_spawn_respawn() {
+  local home=$1
+  shift
+  FM_ROOT_OVERRIDE='' \
+    FM_HOME="$home" \
+    FM_STATE_OVERRIDE='' \
+    FM_DATA_OVERRIDE='' \
+    FM_PROJECTS_OVERRIDE='' \
+    FM_CONFIG_OVERRIDE='' \
+    FM_SPAWN_NO_GUARD=1 \
+    FM_BACKEND=tmux \
+    "$ROOT/bin/fm-spawn.sh" "$@" 2>&1
+}
+
+test_respawn_keeps_block_until_explicitly_lifted() {
+  local home meta out rc
+  home="$TMP_ROOT/respawn-home"
+  mkdir -p "$home/state" "$home/data" "$home/projects/alpha"
+  meta="$home/state/task-respawn-r7.meta"
+  fm_write_meta "$meta" \
+    "window=fm-task-respawn-r7" \
+    "worktree=$home/projects/alpha" \
+    "project=$home/projects/alpha" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "yolo=off" \
+    "merge=blocked"
+
+  # The stuck-crewmate recovery shape: the same id relaunched with a different
+  # harness and no --no-merge. Omitting the flag is not a captain decision.
+  set +e
+  out=$(run_spawn_respawn "$home" task-respawn-r7 projects/alpha pi)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "respawn: the spawn should still stop at the missing brief"
+  assert_contains "$out" 'already records merge=blocked; carrying that constraint onto this launch' \
+    "respawn: a recovery respawn without --no-merge dropped the recorded merge block"
+
+  # Only the explicit lift clears it.
+  set +e
+  out=$(run_spawn_respawn "$home" task-respawn-r7 projects/alpha pi --captain-authorized)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "respawn-lift: the spawn should still stop at the missing brief"
+  assert_contains "$out" 'lifted by explicit captain authorization' \
+    "respawn-lift: --captain-authorized did not lift the recorded block"
+
+  # Contradictory intents are refused rather than silently ordered.
+  set +e
+  out=$(run_spawn_respawn "$home" task-respawn-r7 projects/alpha pi --no-merge --captain-authorized)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "respawn-both: passing both merge flags must be refused"
+  assert_contains "$out" '--no-merge and --captain-authorized contradict each other' \
+    "respawn-both: contradictory merge flags were accepted"
+
+  # An existing record that cannot be read refuses the respawn instead of being
+  # rewritten as permission.
+  fm_write_meta "$meta" "kind=ship" "merge="
+  set +e
+  out=$(run_spawn_respawn "$home" task-respawn-r7 projects/alpha pi)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "respawn-unreadable: an unreadable merge record must refuse the respawn"
+  assert_contains "$out" 'records a merge authority that cannot be read' \
+    "respawn-unreadable: an unreadable merge record was rewritten instead of refusing"
+  assert_not_contains "$out" 'no brief at' \
+    "respawn-unreadable: the refusal came after the spawn had already proceeded"
+  pass "a recovery respawn keeps merge=blocked, only an explicit lift clears it, and an unreadable record refuses"
+}
+
 test_spawn_flag_records_blocked
 test_ordinary_spawn_records_no_merge_field
+test_valueless_authority_refuses
+test_rewrite_carries_constraint_forward
+test_respawn_keeps_block_until_explicitly_lifted
 test_blocked_task_refuses_before_recording
 test_validation_completion_and_yolo_do_not_lift_block
 test_observed_merged_state_does_not_lift_block

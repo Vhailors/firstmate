@@ -116,6 +116,14 @@ Current known local customization areas, their authoritative owners, and how exp
 The tracked rows above are the whole rebase surface.
 If a future customization does not fit an existing row, add a row here in the same commit that adds the customization, so the inventory never lags the code.
 
+### Dropped customizations
+
+A customization the captain asked for and then dropped is recorded here, so a missing row reads as a decision rather than as an accidental omission during a merge (step 2 of the merge procedure).
+
+| Area | Dropped on | Why |
+| --- | --- | --- |
+| Guarded whole-project removal (`bin/fm-project-remove.sh` and its suite, from the `fm/guarded-project-removal-helper-v2` branch) | 2026-07-30, by captain decision during the upstream mix | The deletion-boundary drain refused on every Linux run: it required every same-UID process's `/proc/<pid>` handle roots to be enumerable, which `kernel.yama.ptrace_scope=1` (the default on this host) forbids, so `--confirm` always quarantined the clone and then restored it. Its suite faked `uname` as Darwin and so could not observe the refusal. Excluded rather than weakened, because relaxing the drain would have traded the capability's safety model for its availability; upstream removal behavior is restored and the source branch is left intact for a Linux-correct rework. |
+
 The table is wider than the behavior change that produced it, and that is expected.
 One scoped launch decision is a few lines of shell, but this repo requires every owner document, adapter fact, setup instruction, and verification command to stay accurate, so the prose rows fan out from a small code change rather than from a large one.
 Judge a customization's rebase cost by its behavior rows, not its prose rows: prose conflicts resolve by keeping both sides, while a behavior row that upstream has reworked is a replace decision.

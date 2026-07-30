@@ -14,26 +14,64 @@
 #   allowed   explicitly unconstrained
 #   blocked   both firstmate merge actions refuse this task
 # Any other value is unrecognized and refuses, so a corrupted, truncated, or
-# future field can never be read as permission.
+# future field can never be read as permission. A merge= line with no value at
+# all is corruption rather than a recorded decision - no writer produces it, and
+# the meta is written with a plain redirect that a full disk or a crash can
+# truncate mid-line - so it is reported as an unreadable record, not as absence.
 #
 # The block is lifted only by an explicit per-merge --captain-authorized on the
 # invocation. It is deliberately NOT lifted by yolo, by validation completing,
 # by CI turning green, or by observing that the pull request merged elsewhere:
 # those are observations about the work, not the captain's decision to land it.
 #
-# bin/fm-spawn.sh --no-merge is the only writer of merge=blocked.
+# bin/fm-spawn.sh --no-merge is the only writer of merge=blocked, and
+# fm_merge_authority_resolve below is the one rule every rewrite of an existing
+# task's meta follows, so a recorded block survives a respawn that simply did
+# not repeat the flag.
 
 # Echo the task's recorded merge authority, defaulting to "allowed" when the
-# field is absent. Returns 1 when the metadata itself cannot be read, so an
-# unreadable record refuses instead of defaulting to permission.
+# field is absent. Returns 1 when the record cannot be read at all or carries a
+# valueless merge= field, so neither an unreadable nor a truncated record can
+# resolve to permission. A successful read always echoes a non-empty value.
 fm_merge_authority_value() {
   local meta=$1 raw lines status=0
   [ -f "$meta" ] && [ ! -L "$meta" ] && [ -r "$meta" ] || return 1
   lines=$(grep '^merge=' "$meta") || status=$?
   [ "$status" -le 1 ] || return 1
+  if [ "$status" -eq 1 ]; then
+    printf '%s\n' allowed
+    return 0
+  fi
   raw=$(printf '%s\n' "$lines" | tail -1 | cut -d= -f2-)
-  [ -n "$raw" ] || raw=allowed
+  [ -n "$raw" ] || return 1
   printf '%s\n' "$raw"
+}
+
+# Decide which merge authority a metadata rewrite must record for one task.
+# Usage: fm_merge_authority_resolve <meta-path> <requested value|""> <lift 0|1>
+# Echoes the value to write, empty when no merge= line is needed, and returns 1
+# when an existing record cannot be read.
+#
+# Every launch rewrites the whole meta, so a respawn that omits --no-merge would
+# otherwise erase the captain's constraint and the task would read as permitted.
+# A recorded constraint therefore wins over whatever this invocation asked for,
+# and only an explicit lift on this invocation clears it: neither omitting a
+# flag nor a recovery respawn is a captain decision. An unrecognized recorded
+# value is carried forward verbatim so it keeps refusing.
+fm_merge_authority_resolve() {
+  local meta=$1 requested=${2:-} lift=${3:-0} recorded=
+  if [ -e "$meta" ] || [ -L "$meta" ]; then
+    recorded=$(fm_merge_authority_value "$meta") || return 1
+  fi
+  if [ -n "$recorded" ] && [ "$recorded" != allowed ]; then
+    if [ "$lift" = 1 ]; then
+      printf '%s\n' allowed
+      return 0
+    fi
+    printf '%s\n' "$recorded"
+    return 0
+  fi
+  printf '%s\n' "$requested"
 }
 
 # Strip a leading --captain-authorized from the argument list.

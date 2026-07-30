@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--scout] [--no-merge]
+# Usage: fm-spawn.sh <task-id> <project-dir> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--scout] [--no-merge|--captain-authorized]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
@@ -12,6 +12,13 @@
 #   the brief is guidance to the worker and binds nothing else, while this field
 #   is the constraint firstmate's own merge actions can read and obey.
 #   bin/fm-merge-authority-lib.sh owns the field and its values.
+#   A recorded block is carried forward onto every later respawn of the same task
+#   id, because each launch rewrites the whole meta and a recovery respawn that
+#   simply does not repeat --no-merge is not a captain decision to allow the
+#   merge. --captain-authorized is the only thing that lifts it, and it records
+#   merge=allowed so the lift is durable too; passing both flags is refused.
+#   A respawn whose existing meta records a merge authority that cannot be read
+#   refuses before any launch rather than rewriting it as permission.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
 #   axes chosen by firstmate at intake. They are only threaded into harnesses whose
 #   installed CLIs were verified to support that axis; unsupported axes are omitted
@@ -95,7 +102,7 @@
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
-#   source of truth; shared --scout/--harness/--model/--effort/--backend applies to every pair.
+#   source of truth; shared --scout/--harness/--model/--effort/--backend/--no-merge applies to every pair.
 #   If config/crew-dispatch.json exists, shared --harness is required for crewmate
 #   and scout batches. The loop lives here, in bash, so callers never hand-write a
 #   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
@@ -125,7 +132,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-  sed -n '2,85p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,92p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in
@@ -171,6 +178,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-merge-authority-lib.sh
+. "$SCRIPT_DIR/fm-merge-authority-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -179,6 +188,7 @@ fm_refuse_if_gate_agent
 [ -n "${FM_SPAWN_NO_GUARD:-}" ] || "$FM_ROOT/bin/fm-guard.sh" || true
 KIND=ship
 MERGE_AUTHORITY=
+MERGE_LIFT=0
 HARNESS_ARG=
 MODEL=
 EFFORT=
@@ -208,6 +218,7 @@ for a in "$@"; do
     --scout) KIND=scout ;;
     --secondmate) KIND=secondmate ;;
     --no-merge) MERGE_AUTHORITY=blocked ;;
+    --captain-authorized) MERGE_LIFT=1 ;;
     --harness) want_value=harness ;;
     --harness=*) HARNESS_ARG=${a#--harness=}; HARNESS_SET=1 ;;
     --model) want_value=model ;;
@@ -220,6 +231,8 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+[ "$MERGE_LIFT" -eq 0 ] || [ -z "$MERGE_AUTHORITY" ] \
+  || { echo "error: --no-merge and --captain-authorized contradict each other; pass exactly one" >&2; exit 1; }
 [ "$HARNESS_SET" -eq 0 ] || [ -n "$HARNESS_ARG" ] || { echo "error: --harness requires a non-empty value" >&2; exit 1; }
 [ "$MODEL_SET" -eq 0 ] || [ -n "$MODEL" ] || { echo "error: --model requires a non-empty value" >&2; exit 1; }
 [ "$EFFORT_SET" -eq 0 ] || [ -n "$EFFORT" ] || { echo "error: --effort requires a non-empty value" >&2; exit 1; }
@@ -322,8 +335,9 @@ spawn_abort_cleanup() {
             echo "kind=$KIND"
             echo "mode=${MODE:-no-mistakes}"
             echo "yolo=${YOLO:-off}"
-            # Carried onto the leak record too, so a later recovery of this
-            # orphaned worktree cannot read a dropped field as permission.
+            # Carried onto the leak record too - already resolved against the
+            # previous meta - so a later recovery of this orphaned worktree
+            # cannot read a dropped field as permission.
             [ -z "$MERGE_AUTHORITY" ] || echo "merge=$MERGE_AUTHORITY"
             echo "tasktmp=${TASK_TMP:-}"
             echo "model=${MODEL:-default}"
@@ -393,6 +407,10 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ -z "$MODEL" ] || shared_args+=(--model "$MODEL")
   [ -z "$EFFORT" ] || shared_args+=(--effort "$EFFORT")
   [ -z "$BACKEND_ARG" ] || shared_args+=(--backend "$BACKEND_ARG")
+  # Forwarded like every other shared axis: a batch that asked for a merge block
+  # must not land unblocked pairs just because the loop dropped the flag.
+  [ -z "$MERGE_AUTHORITY" ] || shared_args+=(--no-merge)
+  [ "$MERGE_LIFT" -eq 0 ] || shared_args+=(--captain-authorized)
   for pair in "${POS[@]}"; do
     case "$pair" in
       *=*) : ;;
@@ -418,6 +436,25 @@ if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
   exit 1
 fi
 SPAWN_TASK_LOCK_HELD=1
+# Resolve the durable merge authority before anything can be created or recorded,
+# so both meta writers below (the launch write and the orphaned-worktree leak
+# record) publish the carried-forward value rather than this invocation's flags
+# alone. Held under the task lock, so a concurrent same-id spawn cannot read the
+# constraint while another rewrite is replacing it.
+MERGE_REQUESTED=$MERGE_AUTHORITY
+if ! MERGE_AUTHORITY=$(fm_merge_authority_resolve "$STATE/$ID.meta" "$MERGE_REQUESTED" "$MERGE_LIFT"); then
+  echo "error: existing metadata for $ID records a merge authority that cannot be read; refusing to respawn rather than rewriting it as permission" >&2
+  exit 1
+fi
+if [ "$MERGE_LIFT" -eq 1 ]; then
+  if [ "$MERGE_AUTHORITY" = allowed ]; then
+    echo "note: merge block on task $ID lifted by explicit captain authorization" >&2
+  else
+    echo "note: task $ID records no merge block for --captain-authorized to lift" >&2
+  fi
+elif [ -n "$MERGE_AUTHORITY" ] && [ "$MERGE_AUTHORITY" != "$MERGE_REQUESTED" ]; then
+  echo "note: task $ID already records merge=$MERGE_AUTHORITY; carrying that constraint onto this launch (bin/fm-merge-authority-lib.sh)" >&2
+fi
 PROJ=
 ARG3=
 FIRSTMATE_HOME=
@@ -1477,9 +1514,10 @@ META_WINDOW=$T
   echo "kind=$KIND"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
-  # merge= is written only for a --no-merge spawn, so an ordinary task's meta
-  # stays byte-identical and absent merge= keeps meaning "merging is allowed"
-  # (bin/fm-merge-authority-lib.sh).
+  # merge= is written only when this task has a resolved merge authority - a
+  # --no-merge spawn, a constraint carried forward from the previous meta, or an
+  # explicit lift - so an ordinary task's meta stays byte-identical and absent
+  # merge= keeps meaning "merging is allowed" (bin/fm-merge-authority-lib.sh).
   [ -z "$MERGE_AUTHORITY" ] || echo "merge=$MERGE_AUTHORITY"
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"

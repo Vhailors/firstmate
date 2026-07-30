@@ -48,7 +48,10 @@
 #
 # On a Pi primary, the supervision-block step also checks whether Pi's two
 # tracked primary extensions are loaded and prints a PI_WATCH_EXTENSION
-# reminder line when one is missing.
+# reminder line when one is missing. When both are loaded but the session was
+# not started with Firstmate's extension isolation, it prints a
+# PI_EXTENSION_ISOLATION reminder instead, because discovered user-global
+# extensions can register duplicate built-in tools in that case.
 #
 # Why lock first: the old documented order (bootstrap, THEN lock) let a
 # SECOND concurrent session run bootstrap's mutating sweeps - fast-forwarding
