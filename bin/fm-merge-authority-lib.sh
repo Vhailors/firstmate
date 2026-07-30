@@ -27,9 +27,11 @@
 # field is absent. Returns 1 when the metadata itself cannot be read, so an
 # unreadable record refuses instead of defaulting to permission.
 fm_merge_authority_value() {
-  local meta=$1 raw
-  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
-  raw=$(grep '^merge=' "$meta" | tail -1 | cut -d= -f2- || true)
+  local meta=$1 raw lines status=0
+  [ -f "$meta" ] && [ ! -L "$meta" ] && [ -r "$meta" ] || return 1
+  lines=$(grep '^merge=' "$meta") || status=$?
+  [ "$status" -le 1 ] || return 1
+  raw=$(printf '%s\n' "$lines" | tail -1 | cut -d= -f2-)
   [ -n "$raw" ] || raw=allowed
   printf '%s\n' "$raw"
 }

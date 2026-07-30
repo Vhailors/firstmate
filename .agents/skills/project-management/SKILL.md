@@ -77,13 +77,9 @@ If doctor reports an environment, authentication, or daemon problem, resolve tha
 
 ## Remove
 
-Project removal is destructive and always captain-gated.
+Project removal is destructive.
+First obtain the captain's explicit removal decision, then inspect the current digest and authoritative repositories for in-flight or queued work, registered secondmate clones, linked worktrees, dirty files, unpushed commits, and any other unlanded work.
+If any dependency or unlanded work exists, stop and report it before changing anything.
 Never issue a raw removal command from Firstmate.
-`bin/fm-project-remove.sh` owns the complete guarded removal transaction, and its header comment is the authoritative contract for all mechanics.
-It is the captain-authorized guarded project-removal exception named in the prime directives, and it is the only sanctioned way a clone leaves `projects/`.
-
-First obtain the captain's explicit removal decision naming the exact project.
-Run the helper's read-only check mode to inventory blockers before removing or escalating.
-Follow the helper header for resolution, blocker ownership, authority, locking, deletion, and registry behavior.
-If the check offers an exact token, present it to the captain and rerun only with that unchanged token after explicit approval.
-A refusal is a stop-and-report result: use the named owner path and never work around the helper with raw commands.
+Once that preflight confirms none of the above and the captain's approval is concrete, AGENTS.md hard rule 1's captain-approved project operation exception authorizes firstmate to remove the clone directly and update its registry entry to match.
+When a clone has already been removed through an approved removal, or the registry is provably stale because no clone exists, remove its registry line so navigation matches reality.

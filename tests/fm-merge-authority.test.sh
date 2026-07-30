@@ -23,6 +23,8 @@
 #   (i) an unrecognized merge= value refuses rather than defaulting to allowed
 #   (j) a task with no merge= field still merges normally
 #   (k) fm-merge-local refuses a merge=blocked local-only task before touching git
+#   (l) an unreadable task meta refuses instead of reading as "no constraint"
+#   (m) a metadata read error refuses instead of reading as "no constraint"
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -312,6 +314,65 @@ test_absent_authority_still_merges() {
   pass "a task with no recorded merge authority merges exactly as before"
 }
 
+# --- (l)(m) an unreadable record is not permission ---------------------------
+
+# The dangerous shape is a meta the invoking user cannot read: the recorded value
+# might be blocked, and "I could not look" must never resolve to "allowed".
+test_unreadable_meta_refuses() {
+  local case_dir rc
+  case_dir=$(make_case unreadable-meta)
+  if [ "$(id -u)" -eq 0 ]; then
+    pass "unreadable-meta: skipped, root bypasses file permissions"
+    return 0
+  fi
+  # No merge= line at all, so an unreadable record that fell back to the absent
+  # default would merge; only a read-failure refusal keeps this task unmerged.
+  chmod 000 "$case_dir/state/task-nm.meta"
+
+  set +e
+  run_pr_merge "$case_dir" task-nm https://github.com/example/repo/pull/167 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  chmod 600 "$case_dir/state/task-nm.meta"
+
+  expect_code 1 "$rc" "unreadable-meta: an unreadable task meta must refuse to merge"
+  assert_grep 'merge authority for task task-nm could not be read' "$case_dir/stderr" \
+    "unreadable-meta: refusal did not name the unreadable authority"
+  assert_no_merge_attempted "$case_dir" unreadable-meta
+  pass "an unreadable task meta refuses instead of defaulting to permission"
+}
+
+# A transient read error reaches the library as grep status 2. It is provoked with
+# a grep shim because a real I/O error is not reproducible, and it is the same
+# status a root-owned or failing-disk meta produces.
+test_meta_read_error_refuses() {
+  local case_dir rc fakebin
+  case_dir=$(make_case read-error "merge=blocked")
+  fakebin="$case_dir/readfail"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/grep" <<'SH'
+#!/usr/bin/env bash
+exit 2
+SH
+  chmod +x "$fakebin/grep"
+
+  set +e
+  PATH="$fakebin:$PATH" bash -c '
+    set -u
+    . "$1"
+    fm_merge_authority_check "$2" task-nm 0
+  ' bash "$ROOT/bin/fm-merge-authority-lib.sh" "$case_dir/state/task-nm.meta" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "read-error: a metadata read error must refuse to merge"
+  assert_grep 'merge authority for task task-nm could not be read' "$case_dir/stderr" \
+    "read-error: a failed read was reported as something other than unreadable"
+  pass "a metadata read error refuses instead of reading as an absent constraint"
+}
+
 # --- (k) the local landing path honors the same field -----------------------
 
 test_merge_local_refuses_blocked_task() {
@@ -372,4 +433,6 @@ test_pr_check_preserves_merge_block
 test_captain_authorized_merge_lands
 test_unrecognized_authority_refuses
 test_absent_authority_still_merges
+test_unreadable_meta_refuses
+test_meta_read_error_refuses
 test_merge_local_refuses_blocked_task

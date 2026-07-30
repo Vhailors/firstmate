@@ -110,7 +110,6 @@ Current known local customization areas, their authoritative owners, and how exp
 | Pi command shapes inside maintainer verification | [`docs/arm-pretool-check.md`](../arm-pretool-check.md), [`docs/cd-guard.md`](../cd-guard.md), [`docs/verification/supervision.md`](../verification/supervision.md) | each verification document | low to change, but the evidence must be re-run rather than reworded when the launch shape moves |
 | Changed-file test routing for the launcher | one pattern in `bin/fm-test-run.sh` | `bin/fm-test-run.sh --help` | medium; upstream edits the same map when it adds scripts |
 | Explicit do-not-merge enforcement | `bin/fm-merge-authority-lib.sh` plus narrow call sites in the spawn and merge helpers | the library header and `tests/fm-merge-authority.test.sh` | medium; upstream may change spawn metadata or the guarded merge entry points |
-| Guarded whole-project removal | `bin/fm-project-remove.sh` and its project-management owner guidance | the script header and `tests/fm-project-remove.test.sh` | low in code because the transaction is isolated; medium in policy prose |
 | Local operating choices | gitignored `config/` files and `.env` | [`docs/configuration.md`](../configuration.md) | none; untracked and never rebased |
 | Private fleet records | gitignored `data/`, `state/`, `projects/` | `AGENTS.md` section 2 | none; untracked and never rebased |
 
