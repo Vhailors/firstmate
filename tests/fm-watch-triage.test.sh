@@ -129,7 +129,13 @@ reap() {
 # replaces lib.sh's own EXIT trap, so it has to call fm_test_cleanup itself (see
 # tests/lib.sh) or the registered temp dirs leak on every run - and it has to do
 # that after the kills, so nothing repopulates a dir as it is being removed.
-trap 'for _bg in $(jobs -p); do reap "$_bg"; done; fm_test_cleanup' EXIT
+reap_background_jobs() {
+  local bg
+  for bg in $(jobs -p); do
+    reap "$bg"
+  done
+}
+trap 'reap_background_jobs; fm_test_cleanup' EXIT
 
 test_reap_retries_a_surviving_term() {
   local ready pid start elapsed i

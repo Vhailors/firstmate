@@ -422,6 +422,10 @@ test_tmproot_registration_survives_command_substitution() {
   # exit, on a failed assertion, and under a test file's own EXIT trap.
   for probe in clean failing owntrap; do
     mkdir -p "$tmp/$probe/tmp"
+    # The single quotes below are deliberate: these printf formats emit the
+    # probe script's own source, so $TMP_ROOT has to reach the file unexpanded
+    # and expand when the probe runs.
+    # shellcheck disable=SC2016
     {
       printf 'set -u\n'
       printf '. "%s/tests/lib.sh"\n' "$ROOT"
