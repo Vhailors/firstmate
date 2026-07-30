@@ -48,10 +48,7 @@
 #
 # On a Pi primary, the supervision-block step also checks whether Pi's two
 # tracked primary extensions are loaded and prints a PI_WATCH_EXTENSION
-# reminder line when one is missing. When both are loaded but the session was
-# not started with Firstmate's extension isolation, it prints a
-# PI_EXTENSION_ISOLATION reminder instead, because discovered user-global
-# extensions can register duplicate built-in tools in that case.
+# reminder line when one is missing.
 #
 # Why lock first: the old documented order (bootstrap, THEN lock) let a
 # SECOND concurrent session run bootstrap's mutating sweeps - fast-forwarding
@@ -314,19 +311,21 @@ AFK_PRESENT=0
 X_MODE_PRESENT=0
 [ -f "$CONFIG/x-mode.env" ] && X_MODE_PRESENT=1
 
-if [ "$PRIMARY_HARNESS" = pi ]; then
+if [ "$PRIMARY_HARNESS" = pi ] || [ "$PRIMARY_HARNESS" = pi-signed ]; then
   PI_EXT="$FM_ROOT/.pi/extensions/fm-primary-pi-watch.ts"
   PI_TURNEND_EXT="$FM_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
   PI_WATCH_MARKER="$STATE/.pi-watch-extension-loaded"
   PI_TURNEND_MARKER="$STATE/.pi-turnend-extension-loaded"
   PI_LOCK="$STATE/.lock"
+  PI_RESTART_COMMAND="$FM_ROOT/bin/fm-pi-primary.sh"
+  [ "$PRIMARY_HARNESS" != pi-signed ] || PI_RESTART_COMMAND="FM_PI_HARNESS=pi-signed $PI_RESTART_COMMAND"
   PI_WATCH_VERSION=$(hash_file "$PI_EXT" || printf '')
   PI_TURNEND_VERSION=$(hash_file "$PI_TURNEND_EXT" || printf '')
   if ! pi_extension_loaded "$PI_WATCH_MARKER" "$PI_WATCH_VERSION" "$PI_LOCK" \
     || ! pi_extension_loaded "$PI_TURNEND_MARKER" "$PI_TURNEND_VERSION" "$PI_LOCK"; then
-    printf 'PI_WATCH_EXTENSION: not loaded - restart through %s so extension discovery stays disabled while %s and %s load explicitly for turn-end guard and background wake coverage\n' "$FM_ROOT/bin/fm-pi-primary.sh" "$PI_TURNEND_EXT" "$PI_EXT"
+    printf 'PI_WATCH_EXTENSION: not loaded - restart through %s so extension discovery stays disabled while %s and %s load explicitly for turn-end guard and background wake coverage\n' "$PI_RESTART_COMMAND" "$PI_TURNEND_EXT" "$PI_EXT"
   elif [ "${FM_PI_EXTENSION_ISOLATION:-}" != 1 ]; then
-    printf 'PI_EXTENSION_ISOLATION: not scoped - both extensions are loaded, but this session was not launched with Firstmate extension isolation, so discovered user-global Pi extensions can still register duplicate built-in tools alongside them; restart through %s\n' "$FM_ROOT/bin/fm-pi-primary.sh"
+    printf 'PI_EXTENSION_ISOLATION: not scoped - both extensions are loaded, but this session was not launched with Firstmate extension isolation, so discovered user-global Pi extensions can still register duplicate built-in tools alongside them; restart through %s\n' "$PI_RESTART_COMMAND"
   fi
 fi
 "$SCRIPT_DIR/fm-supervision-instructions.sh" \
