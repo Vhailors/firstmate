@@ -454,6 +454,7 @@ FM_FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS=30       # min mtime age before fm-fleet
 FM_BUSY_REGEX=          # optional global override for every harness-scoped busy-pane matcher; unset uses each recorded harness's verified signature
 FM_COMPOSER_IDLE_RE=    # optional empty-composer regex, applied after ghost and border stripping
 FM_COMPOSER_GHOST_LUMA_MAX=128   # fleet-wide: max perceived luminance (0.299R+0.587G+0.114B, 0-255) for a TRUECOLOR foreground to count as de-emphasised ghost/placeholder text and be stripped; dim/faint (SGR 2) is stripped regardless. Assumes a dark terminal theme (bin/fm-composer-lib.sh's fm_composer_strip_ghost, shared by the tmux and herdr composer readers)
+FM_PI_DYNAMIC_WORKFLOWS_EXTENSION=   # optional absolute path to the installed pi-dynamic-workflows extensions/workflow.ts that Pi-family crewmate and scout launches load; unset resolves ${PI_CODING_AGENT_DIR:-~/.pi/agent}/git/github.com/QuintinShaw/pi-dynamic-workflows/extensions/workflow.ts, and a relative or missing path refuses the spawn instead of launching without workflow fan-out
 GROK_HOME=              # optional Grok config home for firstmate's global grok turn-end hook; defaults to ~/.grok
 FM_SEND_RETRIES=3       # fm-send Enter-retry attempts after typing the line once
 FM_SEND_SLEEP=0.4       # seconds between fm-send submit checks
