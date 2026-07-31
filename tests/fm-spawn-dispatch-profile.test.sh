@@ -90,12 +90,14 @@ run_spawn() {
   # explicitly (empty by default) instead of leaking the invoking shell's value,
   # which would make launch assertions depend on the developer's environment.
   # A test opts in to the set case via FM_TEST_CLAUDE_CONFIG_DIR.
+  # FM_PI_DYNAMIC_WORKFLOWS_EXTENSION is pinned to the case fixture for the same
+  # reason; a test opts in to another path via FM_TEST_PI_WORKFLOW_EXTENSION.
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     CLAUDE_CONFIG_DIR="${FM_TEST_CLAUDE_CONFIG_DIR:-}" \
-    FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_PI_DYNAMIC_WORKFLOWS_EXTENSION:-$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts}" \
+    FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_TEST_PI_WORKFLOW_EXTENSION:-$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts}" \
     FM_FAKE_LAUNCH_LOG="$launchlog" GROK_HOME="$home/grok-home" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
@@ -512,7 +514,7 @@ test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint() {
   rec=$(make_spawn_case profile-pi-workflow-missing pi "$id")
   read_case_record "$rec"
 
-  out=$(FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/missing-workflow.ts" \
+  out=$(FM_TEST_PI_WORKFLOW_EXTENSION="$CASE_DIR/missing-workflow.ts" \
     run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" 2>&1)
   status=$?
   expect_code 1 "$status" "a missing Pi workflow extension should refuse the crewmate spawn"
@@ -557,6 +559,7 @@ test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata() {
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
+    FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts" \
     FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" PATH="$FAKEBIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
     "$SPAWN" "$id" "$PROJ_DIR" 2>&1)
   status=$?
