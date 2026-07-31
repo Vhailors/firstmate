@@ -56,6 +56,8 @@ make_spawn_case() {
   launchlog="$case_dir/launch.log"
   fakebin=$(make_spawn_fakebin "$case_dir/fake")
   mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
+  mkdir -p "$case_dir/pi-dynamic-workflows/extensions"
+  : > "$case_dir/pi-dynamic-workflows/extensions/workflow.ts"
   printf '%s\n' "$harness" > "$home/config/crew-harness"
   fm_git_worktree "$proj" "$wt" "wt-$name"
   touch "$home/state/.last-watcher-beat"
@@ -88,11 +90,14 @@ run_spawn() {
   # explicitly (empty by default) instead of leaking the invoking shell's value,
   # which would make launch assertions depend on the developer's environment.
   # A test opts in to the set case via FM_TEST_CLAUDE_CONFIG_DIR.
+  # FM_PI_DYNAMIC_WORKFLOWS_EXTENSION is pinned to the case fixture for the same
+  # reason; a test opts in to another path via FM_TEST_PI_WORKFLOW_EXTENSION.
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     CLAUDE_CONFIG_DIR="${FM_TEST_CLAUDE_CONFIG_DIR:-}" \
+    FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_TEST_PI_WORKFLOW_EXTENSION:-$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts}" \
     FM_FAKE_LAUNCH_LOG="$launchlog" GROK_HOME="$home/grok-home" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
@@ -143,8 +148,8 @@ test_relative_home_overrides_launch_with_absolute_cross_process_paths() {
       FM_STATE_OVERRIDE=home/state FM_DATA_OVERRIDE=home/data \
       FM_PROJECTS_OVERRIDE=home/projects FM_CONFIG_OVERRIDE=home/config \
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
-      CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
-      GROK_HOME=home/grok-home PATH="$FAKEBIN_DIR:$PATH" \
+      CLAUDE_CONFIG_DIR='' FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts" \
+      FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" GROK_HOME=home/grok-home PATH="$FAKEBIN_DIR:$PATH" \
       "$SPAWN" "$id" "$PROJ_DIR" 2>&1
   )
   status=$?
@@ -172,8 +177,8 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
       FM_STATE_OVERRIDE='' FM_DATA_OVERRIDE='' \
       FM_PROJECTS_OVERRIDE=home/projects FM_CONFIG_OVERRIDE=home/config \
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
-      CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
-      GROK_HOME=home/grok-home PATH="$FAKEBIN_DIR:$PATH" \
+      CLAUDE_CONFIG_DIR='' FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts" \
+      FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" GROK_HOME=home/grok-home PATH="$FAKEBIN_DIR:$PATH" \
       "$SPAWN" "$relative_id" "$PROJ_DIR" 2>&1
   )
   status=$?
@@ -192,8 +197,8 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
       FM_STATE_OVERRIDE='' FM_DATA_OVERRIDE='' \
       FM_PROJECTS_OVERRIDE="$linked_home/projects" FM_CONFIG_OVERRIDE="$linked_home/config" \
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
-      CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
-      GROK_HOME="$linked_home/grok-home" PATH="$FAKEBIN_DIR:$PATH" \
+      CLAUDE_CONFIG_DIR='' FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts" \
+      FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" GROK_HOME="$linked_home/grok-home" PATH="$FAKEBIN_DIR:$PATH" \
       "$SPAWN" "$absolute_id" "$PROJ_DIR" 2>&1
   )
   status=$?
@@ -220,8 +225,8 @@ test_absolute_override_spelling_is_preserved_in_launch_paths() {
       FM_STATE_OVERRIDE="$linked_home/state" FM_DATA_OVERRIDE="$linked_home/data" \
       FM_PROJECTS_OVERRIDE="$linked_home/projects" FM_CONFIG_OVERRIDE="$linked_home/config" \
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
-      CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
-      GROK_HOME="$linked_home/grok-home" PATH="$FAKEBIN_DIR:$PATH" \
+      CLAUDE_CONFIG_DIR='' FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts" \
+      FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" GROK_HOME="$linked_home/grok-home" PATH="$FAKEBIN_DIR:$PATH" \
       "$SPAWN" "$id" "$PROJ_DIR" 2>&1
   )
   status=$?
@@ -494,13 +499,65 @@ test_pi_threads_model_and_max_effort() {
   expect_code 0 "$status" "pi spawn with max effort should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi openai-codex/gpt-5.6-sol max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=pi FM_PI_EXTENSION_ISOLATION=1 pi --no-extensions --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
-    "pi launch did not thread the requested model and max thinking level"
+  assert_contains "$launch" "FM_PI_HARNESS=pi FM_PI_EXTENSION_ISOLATION=1 pi --no-extensions --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e '$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts' -e '$HOME_DIR/state/$id.pi-ext.ts'" \
+    "pi crewmate launch did not thread the workflow and turn-end extensions after the isolation flag"
   assert_not_contains "$launch" "FM_FIRSTMATE_PI_LAUNCH_BRIEF=" \
     "pi launch still exports the removed Calm input-reroute binding"
   assert_contains "$launch" "fm-operational-input.sh' encode launch-brief" \
     "pi launch lost the canonical typed launch-brief envelope"
   pass "pi receives --model and --thinking max profile flags"
+}
+
+test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint() {
+  local rec id out status
+  id=profile-pi-workflow-missing-z8a
+  rec=$(make_spawn_case profile-pi-workflow-missing pi "$id")
+  read_case_record "$rec"
+
+  out=$(FM_TEST_PI_WORKFLOW_EXTENSION="$CASE_DIR/missing-workflow.ts" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" 2>&1)
+  status=$?
+  expect_code 1 "$status" "a missing Pi workflow extension should refuse the crewmate spawn"
+  assert_contains "$out" "pi crewmate/scout workflow extension is missing" \
+    "missing Pi workflow extension refusal did not name both gated kinds and the actionable requirement"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "missing Pi workflow extension refusal wrote task metadata"
+  [ ! -s "$LAUNCH_LOG" ] || fail "missing Pi workflow extension refusal typed a launch command"
+  pass "Pi crewmate refuses safely when the workflow extension is unavailable"
+}
+
+test_pi_project_settings_exclude_workflow_extension_only() {
+  local out status
+  out=$(python3 - "$ROOT/.pi/settings.json" 2>&1 <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+entries = [
+    pkg
+    for pkg in data.get("packages", [])
+    if isinstance(pkg, dict) and "pi-dynamic-workflows" in str(pkg.get("source", ""))
+]
+if len(entries) != 1:
+    raise SystemExit(f"expected exactly one pi-dynamic-workflows package entry, found {len(entries)}")
+entry = entries[0]
+if entry.get("autoload") is not False:
+    raise SystemExit("pi-dynamic-workflows entry must set autoload false to stay a delta over the global entry")
+if entry.get("extensions") != ["!**"]:
+    raise SystemExit(f"pi-dynamic-workflows extensions filter must disable every extension, got {entry.get('extensions')!r}")
+stripped = [key for key in ("skills", "prompts", "themes") if key in entry]
+if stripped:
+    raise SystemExit(
+        "pi-dynamic-workflows entry also filters "
+        + ", ".join(stripped)
+        + "; the override is directory-scoped, so that strips those resources from Pi crewmates and scouts in a Firstmate worktree"
+    )
+PY
+  )
+  status=$?
+  expect_code 0 "$status" "tracked .pi/settings.json broke the Pi workflow role split: $out"
+  pass "tracked Pi project override excludes only the workflow extension"
 }
 
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
@@ -536,6 +593,7 @@ test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata() {
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
+    FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts" \
     FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" PATH="$FAKEBIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
     "$SPAWN" "$id" "$PROJ_DIR" 2>&1)
   status=$?
@@ -566,6 +624,8 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "FM_PI_HARNESS=pi-signed FM_PI_EXTENSION_ISOLATION=1 pi-signed --no-extensions -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
     "pi-signed secondmate did not share Pi's primary extension launch shape"
+  assert_not_contains "$launch" "pi-dynamic-workflows" \
+    "pi-signed secondmate must not load the workflow extension"
   pass "pi-signed is a distinct persistent secondmate runtime with shared Pi supervision semantics"
 }
 
@@ -673,6 +733,8 @@ test_grok_omits_invalid_max_reasoning_effort
 test_grok_omits_invalid_xhigh_reasoning_effort
 test_opencode_threads_model_and_ignores_effort_axis
 test_pi_threads_model_and_max_effort
+test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint
+test_pi_project_settings_exclude_workflow_extension_only
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
 test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity

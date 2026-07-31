@@ -290,6 +290,9 @@ The decision persists per path in `~/.pi/agent/trust.json`, so later spawns in t
 The extension must listen for pi's `turn_end` event, not `agent_end`, so the watcher wakes after each completed turn instead of only when the whole agent run exits.
 Pi sets `PI_CODING_AGENT=true` for its children; this is its harness-detection env marker.
 
+Pi-family crewmate and scout launches also load the installed `pi-dynamic-workflows` `extensions/workflow.ts` explicitly so those workers can run multi-agent fan-out, and `fm-spawn` refuses the spawn before endpoint creation when that extension is unavailable.
+Primaries and persistent secondmates are orchestrators and never load it; `docs/configuration.md` "Harness support" owns the resolved path and its `FM_PI_DYNAMIC_WORKFLOWS_EXTENSION` override.
+
 **Primary-session guard fact (verified 2026-07-09, Pi 0.80.5).**
 The firstmate PRIMARY's own `.pi/extensions/fm-primary-turnend-guard.ts` listens for logical-run `agent_settled`, not per-tool-loop `turn_end`, and uses `pi.sendUserMessage(..., { deliverAs: "followUp" })` to force one guarded follow-up when `bin/fm-turnend-guard.sh` returns 2.
 Without `deliverAs: "followUp"`, Pi rejects the send while the agent is still processing.

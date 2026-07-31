@@ -371,6 +371,8 @@ You are in a disposable git worktree of $REPO, at a detached HEAD on a clean def
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
+Pi crewmates may use the pi-dynamic-workflows workflow tool for multi-agent fan-out when it is loaded; secondmates are orchestrators and do not run it.
+
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 
 # Rules

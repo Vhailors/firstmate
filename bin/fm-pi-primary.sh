@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Launch a Firstmate primary Pi session with extension discovery disabled and
+# Launch the Firstmate Pi orchestrator with extension discovery disabled and
 # only the tracked turn-end guard and watcher extensions restored explicitly.
+# The orchestrator intentionally does not load pi-dynamic-workflows: workflow
+# fan-out belongs to Pi crewmates, while ordinary captain Pi sessions remain
+# outside this launcher and keep their personal package configuration.
 # FM_PI_HARNESS selects plain Pi or the verified pi-signed wrapper without
 # changing the discovery boundary.
 # This keeps user-global extensions available to ordinary `pi` sessions while
@@ -8,7 +11,8 @@
 # Every argument is forwarded to Pi unchanged after the required launch flags.
 # FM_PI_EXTENSION_ISOLATION marks the launched session as discovery-scoped so
 # bin/fm-session-start.sh can report a Pi primary that was started some other
-# way and therefore still has user-global extensions loaded.
+# way and therefore still has user-global extensions loaded, including any
+# orchestrator-inappropriate workflow package.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
