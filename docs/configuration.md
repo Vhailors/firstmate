@@ -187,8 +187,9 @@ Enabled primary-session turn-end guard integrations are tracked as repo-level ho
 Kimi remains outside the primary turn-end guard integrations; [`docs/turnend-guard.md`](turnend-guard.md#compatibility-limits) owns its separate captain-approved crew wake hook.
 Primary-session watcher wake protocols are rendered at session start by [`bin/fm-supervision-instructions.sh`](../bin/fm-supervision-instructions.sh) from [`docs/supervision-protocols/`](supervision-protocols/).
 Claude's Stop `asyncRewake` hook owns tokenless re-arm cycles, Grok uses background-notify cycles, Codex uses bounded foreground checkpoints, Pi and pi-signed use the same two tracked primary extensions, and OpenCode uses its TUI plugin.
-`bin/fm-pi-primary.sh` launches either Pi-family primary with extension discovery disabled and restores only the required turn-end guard and watcher extensions, leaving user-global packages untouched for ordinary Pi sessions.
-It exports `FM_PI_EXTENSION_ISOLATION=1` into the session, which is how `bin/fm-session-start.sh` detects a Pi-family primary that was started outside that boundary; Pi-family secondmate launch templates set the same marker.
+The tracked `.pi/settings.json` project override applies an all-resource exclusion filter to the global pi-dynamic-workflows package, so a plain Pi primary in the Firstmate repo does not load its workflow extension, skills, prompts, or themes.
+`bin/fm-pi-primary.sh` adds the defense-in-depth launcher boundary by disabling extension discovery and restoring only the required turn-end guard and watcher extensions.
+It exports `FM_PI_EXTENSION_ISOLATION=1` into the session, which is how `bin/fm-session-start.sh` detects a Pi-family primary that was started outside that boundary; ordinary captain Pi sessions launched outside the Firstmate repo are not changed.
 `config/crew-harness` is a local, gitignored file containing one adapter name for crewmate and scout launches.
 When pi-signed is selected, Firstmate launches the executable named `pi-signed` from `PATH` with `FM_PI_HARNESS=pi-signed` and refuses the launch if it is unavailable rather than falling back to pi.
 Plain Pi launches set `FM_PI_HARNESS=pi`, so a signed primary's environment cannot relabel a plain Pi worker.
@@ -210,7 +211,8 @@ Kimi continues to use the captain's normal Kimi home, including the existing con
 The Kimi installer requires an existing regular non-symlink `~/.kimi-code/config.toml`, `python3` with `tomllib`, and `jq`; it validates but never serializes the captain's TOML and refuses before writing when the config is missing, malformed, or surprising or when either tool requirement is unavailable.
 Its `remove` action excises only the marker-delimited Firstmate region and removes Firstmate's hook files.
 For Pi and pi-signed secondmate launches, `fm-spawn.sh` disables extension discovery and starts the selected executable with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts` and `.pi/extensions/fm-primary-turnend-guard.ts`, both already present from the secondmate home's git worktree.
-Pi-family crewmate and scout launches apply the same discovery boundary before loading their generated turn-end extension.
+Pi-family crewmate and scout launches apply the same discovery boundary, explicitly load the installed `pi-dynamic-workflows` `extensions/workflow.ts` by absolute path, and fail before endpoint creation when that extension is unavailable.
+The secondmate template never loads that workflow extension because secondmates are orchestrators that dispatch their own crewmates.
 
 ## Crew dispatch profiles (config/crew-dispatch.json)
 

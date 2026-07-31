@@ -56,6 +56,8 @@ make_spawn_case() {
   launchlog="$case_dir/launch.log"
   fakebin=$(make_spawn_fakebin "$case_dir/fake")
   mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
+  mkdir -p "$case_dir/pi-dynamic-workflows/extensions"
+  : > "$case_dir/pi-dynamic-workflows/extensions/workflow.ts"
   printf '%s\n' "$harness" > "$home/config/crew-harness"
   fm_git_worktree "$proj" "$wt" "wt-$name"
   touch "$home/state/.last-watcher-beat"
@@ -93,6 +95,7 @@ run_spawn() {
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     CLAUDE_CONFIG_DIR="${FM_TEST_CLAUDE_CONFIG_DIR:-}" \
+    FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_PI_DYNAMIC_WORKFLOWS_EXTENSION:-$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts}" \
     FM_FAKE_LAUNCH_LOG="$launchlog" GROK_HOME="$home/grok-home" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
@@ -494,13 +497,31 @@ test_pi_threads_model_and_max_effort() {
   expect_code 0 "$status" "pi spawn with max effort should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi openai-codex/gpt-5.6-sol max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=pi FM_PI_EXTENSION_ISOLATION=1 pi --no-extensions --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
-    "pi launch did not thread the requested model and max thinking level"
+  assert_contains "$launch" "FM_PI_HARNESS=pi FM_PI_EXTENSION_ISOLATION=1 pi --no-extensions --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e '$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts' -e '$HOME_DIR/state/$id.pi-ext.ts'" \
+    "pi crewmate launch did not thread the workflow and turn-end extensions after the isolation flag"
   assert_not_contains "$launch" "FM_FIRSTMATE_PI_LAUNCH_BRIEF=" \
     "pi launch still exports the removed Calm input-reroute binding"
   assert_contains "$launch" "fm-operational-input.sh' encode launch-brief" \
     "pi launch lost the canonical typed launch-brief envelope"
   pass "pi receives --model and --thinking max profile flags"
+}
+
+test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint() {
+  local rec id out status
+  id=profile-pi-workflow-missing-z8a
+  rec=$(make_spawn_case profile-pi-workflow-missing pi "$id")
+  read_case_record "$rec"
+
+  out=$(FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/missing-workflow.ts" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" 2>&1)
+  status=$?
+  expect_code 1 "$status" "a missing Pi workflow extension should refuse the crewmate spawn"
+  assert_contains "$out" "pi crewmate workflow extension is missing" \
+    "missing Pi workflow extension refusal did not name the actionable requirement"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "missing Pi workflow extension refusal wrote task metadata"
+  [ ! -s "$LAUNCH_LOG" ] || fail "missing Pi workflow extension refusal typed a launch command"
+  pass "Pi crewmate refuses safely when the workflow extension is unavailable"
 }
 
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
@@ -566,6 +587,8 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "FM_PI_HARNESS=pi-signed FM_PI_EXTENSION_ISOLATION=1 pi-signed --no-extensions -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
     "pi-signed secondmate did not share Pi's primary extension launch shape"
+  assert_not_contains "$launch" "pi-dynamic-workflows" \
+    "pi-signed secondmate must not load the workflow extension"
   pass "pi-signed is a distinct persistent secondmate runtime with shared Pi supervision semantics"
 }
 
@@ -673,6 +696,7 @@ test_grok_omits_invalid_max_reasoning_effort
 test_grok_omits_invalid_xhigh_reasoning_effort
 test_opencode_threads_model_and_ignores_effort_axis
 test_pi_threads_model_and_max_effort
+test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
 test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity

@@ -86,6 +86,7 @@ SH
     assert_contains "$args" "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$harness primary launcher omitted the turn-end guard"
     assert_contains "$args" "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$harness primary launcher omitted the watcher extension"
     assert_not_contains "$args" "fm-calm.ts" "$harness primary launcher still loads the conflicting Calm extension by default"
+    assert_not_contains "$args" "pi-dynamic-workflows" "$harness primary launcher must not load the workflow extension"
     assert_contains "$args" "test/model" "$harness primary launcher did not preserve caller model arguments"
     assert_contains "$args" "launch brief" "$harness primary launcher did not preserve the positional prompt"
     [ "$(cat "$capture.harness")" = "$harness" ] \
