@@ -526,6 +526,40 @@ test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint() {
   pass "Pi crewmate refuses safely when the workflow extension is unavailable"
 }
 
+test_pi_project_settings_exclude_workflow_extension_only() {
+  local out status
+  out=$(python3 - "$ROOT/.pi/settings.json" 2>&1 <<'PY'
+import json
+import sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+entries = [
+    pkg
+    for pkg in data.get("packages", [])
+    if isinstance(pkg, dict) and "pi-dynamic-workflows" in str(pkg.get("source", ""))
+]
+if len(entries) != 1:
+    raise SystemExit(f"expected exactly one pi-dynamic-workflows package entry, found {len(entries)}")
+entry = entries[0]
+if entry.get("autoload") is not False:
+    raise SystemExit("pi-dynamic-workflows entry must set autoload false to stay a delta over the global entry")
+if entry.get("extensions") != ["!**"]:
+    raise SystemExit(f"pi-dynamic-workflows extensions filter must disable every extension, got {entry.get('extensions')!r}")
+stripped = [key for key in ("skills", "prompts", "themes") if key in entry]
+if stripped:
+    raise SystemExit(
+        "pi-dynamic-workflows entry also filters "
+        + ", ".join(stripped)
+        + "; the override is directory-scoped, so that strips those resources from Pi crewmates and scouts in a Firstmate worktree"
+    )
+PY
+  )
+  status=$?
+  expect_code 0 "$status" "tracked .pi/settings.json broke the Pi workflow role split: $out"
+  pass "tracked Pi project override excludes only the workflow extension"
+}
+
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
   local rec id out status launch
   id=profile-pi-signed-z8b
@@ -700,6 +734,7 @@ test_grok_omits_invalid_xhigh_reasoning_effort
 test_opencode_threads_model_and_ignores_effort_axis
 test_pi_threads_model_and_max_effort
 test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint
+test_pi_project_settings_exclude_workflow_extension_only
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
 test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity

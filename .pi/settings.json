@@ -3,10 +3,7 @@
     {
       "source": "https://github.com/QuintinShaw/pi-dynamic-workflows",
       "autoload": false,
-      "extensions": ["!**"],
-      "skills": ["!**"],
-      "prompts": ["!**"],
-      "themes": ["!**"]
+      "extensions": ["!**"]
     }
   ]
 }
