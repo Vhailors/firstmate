@@ -516,8 +516,8 @@ test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint() {
     run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" 2>&1)
   status=$?
   expect_code 1 "$status" "a missing Pi workflow extension should refuse the crewmate spawn"
-  assert_contains "$out" "pi crewmate workflow extension is missing" \
-    "missing Pi workflow extension refusal did not name the actionable requirement"
+  assert_contains "$out" "pi crewmate/scout workflow extension is missing" \
+    "missing Pi workflow extension refusal did not name both gated kinds and the actionable requirement"
   assert_absent "$HOME_DIR/state/$id.meta" \
     "missing Pi workflow extension refusal wrote task metadata"
   [ ! -s "$LAUNCH_LOG" ] || fail "missing Pi workflow extension refusal typed a launch command"

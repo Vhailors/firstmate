@@ -604,7 +604,7 @@ pi_dynamic_workflows_extension_path() {
       ;;
   esac
   if [ ! -f "$extension" ]; then
-    echo "error: pi crewmate workflow extension is missing: $extension (install pi-dynamic-workflows or set FM_PI_DYNAMIC_WORKFLOWS_EXTENSION to its absolute extensions/workflow.ts path)" >&2
+    echo "error: pi crewmate/scout workflow extension is missing: $extension (install pi-dynamic-workflows or set FM_PI_DYNAMIC_WORKFLOWS_EXTENSION to its absolute extensions/workflow.ts path)" >&2
     return 1
   fi
   printf '%s\n' "$extension"
