@@ -48,6 +48,14 @@ PR_POLL="$ROOT/bin/fm-pr-poll.sh"
 MERGE_LOCAL="$ROOT/bin/fm-merge-local.sh"
 TMP_ROOT=$(fm_test_tmproot fm-merge-authority-tests)
 
+# The respawn cases below drive fm-spawn with an explicit pi harness, and a Pi
+# crewmate launch refuses before the missing-brief check when the installed
+# pi-dynamic-workflows extension is absent. Pin it to a sandbox fixture so the
+# refusal these cases decide on is the merge one on every machine.
+PI_WORKFLOW_FIXTURE="$TMP_ROOT/pi-dynamic-workflows/extensions/workflow.ts"
+mkdir -p "$(dirname "$PI_WORKFLOW_FIXTURE")"
+: > "$PI_WORKFLOW_FIXTURE"
+
 # One sandbox: a state dir holding a task meta plus a fakebin whose gh-axi and
 # gh mocks log every invocation, so "was a merge attempted at all" is decidable
 # from the log rather than from the script's exit code.
@@ -536,6 +544,7 @@ run_spawn_respawn() {
     FM_CONFIG_OVERRIDE='' \
     FM_SPAWN_NO_GUARD=1 \
     FM_BACKEND=tmux \
+    FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_TEST_PI_WORKFLOW_EXTENSION:-$PI_WORKFLOW_FIXTURE}" \
     "$ROOT/bin/fm-spawn.sh" "$@" 2>&1
 }
 
