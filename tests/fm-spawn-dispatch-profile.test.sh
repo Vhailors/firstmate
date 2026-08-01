@@ -74,6 +74,17 @@ enable_dispatch_profile() {
     > "$home/config/crew-dispatch.json"
 }
 
+# The thin Pi opt-in requires both globally installed extensions to exist under
+# the resolved Pi agent dir, so every positive thin case seeds them there.
+seed_thin_pi_extensions() {
+  local agent_dir=$1
+  mkdir -p \
+    "$agent_dir/extensions/background-terminals" \
+    "$agent_dir/npm/node_modules/pi-render-cache/extensions"
+  : > "$agent_dir/extensions/background-terminals/index.ts"
+  : > "$agent_dir/npm/node_modules/pi-render-cache/extensions/index.ts"
+}
+
 make_seeded_secondmate_home() {
   local home=$1 id=$2
   mkdir -p "$home/bin" "$home/data"
@@ -92,12 +103,16 @@ run_spawn() {
   # A test opts in to the set case via FM_TEST_CLAUDE_CONFIG_DIR.
   # FM_PI_DYNAMIC_WORKFLOWS_EXTENSION is pinned to the case fixture for the same
   # reason; a test opts in to another path via FM_TEST_PI_WORKFLOW_EXTENSION.
+  # PI_CODING_AGENT_DIR is pinned empty so thin-Pi extension resolution falls back
+  # to the case HOME instead of the developer's relocated Pi agent tree; a test
+  # opts in to a relocated root via FM_TEST_PI_CODING_AGENT_DIR.
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     CLAUDE_CONFIG_DIR="${FM_TEST_CLAUDE_CONFIG_DIR:-}" \
     FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_TEST_PI_WORKFLOW_EXTENSION:-$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts}" \
+    PI_CODING_AGENT_DIR="${FM_TEST_PI_CODING_AGENT_DIR:-}" \
     FM_FAKE_LAUNCH_LOG="$launchlog" GROK_HOME="$home/grok-home" \
     HOME="${FM_TEST_HOME:-$HOME}" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
@@ -520,11 +535,7 @@ test_pi_thin_crewmate_adds_opt_in_flags_and_global_extensions() {
   id=profile-pi-thin-z8e
   rec=$(make_spawn_case profile-pi-thin pi "$id")
   read_case_record "$rec"
-  mkdir -p \
-    "$HOME_DIR/.pi/agent/extensions/background-terminals" \
-    "$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions"
-  : > "$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts"
-  : > "$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions/index.ts"
+  seed_thin_pi_extensions "$HOME_DIR/.pi/agent"
   printf '%s\n' 1 > "$HOME_DIR/config/pi-crew-thin"
 
   out=$(FM_TEST_HOME="$HOME_DIR" run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
@@ -543,12 +554,8 @@ test_pi_thin_on_value_is_supported() {
   id=profile-pi-thin-on-z8f
   rec=$(make_spawn_case profile-pi-thin-on pi "$id")
   read_case_record "$rec"
-  mkdir -p \
-    "$HOME_DIR/.pi/agent/extensions/background-terminals" \
-    "$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions"
-  : > "$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts"
-  : > "$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions/index.ts"
-  printf '%s\n' on > "$HOME_DIR/config/pi-crew-thin"
+  seed_thin_pi_extensions "$HOME_DIR/.pi/agent"
+  printf '%s\n' '  on  ' > "$HOME_DIR/config/pi-crew-thin"
 
   out=$(FM_TEST_HOME="$HOME_DIR" run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id" "$PROJ_DIR" --scout)
@@ -557,7 +564,69 @@ test_pi_thin_on_value_is_supported() {
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "--no-skills -e '$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts' -e '$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions/index.ts'" \
     "config/pi-crew-thin=on did not assemble the thin Pi extensions"
-  pass "config/pi-crew-thin=on enables the same thin Pi launch"
+  pass "config/pi-crew-thin=on enables the same thin Pi launch even when padded with whitespace"
+}
+
+test_pi_thin_resolves_under_relocated_pi_agent_dir() {
+  local rec id out status launch agent_dir
+  id=profile-pi-thin-agentdir-z8h
+  rec=$(make_spawn_case profile-pi-thin-agentdir pi "$id")
+  read_case_record "$rec"
+  agent_dir="$CASE_DIR/relocated-pi-agent"
+  seed_thin_pi_extensions "$agent_dir"
+  seed_thin_pi_extensions "$HOME_DIR/.pi/agent"
+  printf '%s\n' 1 > "$HOME_DIR/config/pi-crew-thin"
+
+  out=$(FM_TEST_HOME="$HOME_DIR" FM_TEST_PI_CODING_AGENT_DIR="$agent_dir" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "thin Pi spawn under a relocated agent dir should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--no-skills -e '$agent_dir/extensions/background-terminals/index.ts' -e '$agent_dir/npm/node_modules/pi-render-cache/extensions/index.ts'" \
+    "thin Pi extensions ignored PI_CODING_AGENT_DIR"
+  assert_not_contains "$launch" "$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts" \
+    "thin Pi extensions still resolved under the unused HOME agent tree"
+  pass "thin Pi extensions resolve under PI_CODING_AGENT_DIR like the workflow extension"
+}
+
+test_pi_thin_missing_extension_refuses_before_endpoint() {
+  local rec id out status
+  id=profile-pi-thin-missing-z8i
+  rec=$(make_spawn_case profile-pi-thin-missing pi "$id")
+  read_case_record "$rec"
+  mkdir -p "$HOME_DIR/.pi/agent/extensions/background-terminals"
+  : > "$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts"
+  printf '%s\n' 1 > "$HOME_DIR/config/pi-crew-thin"
+
+  out=$(FM_TEST_HOME="$HOME_DIR" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" 2>&1)
+  status=$?
+  expect_code 1 "$status" "a missing thin Pi extension should refuse the crewmate spawn"
+  assert_contains "$out" "thin pi crewmate pi-render-cache extension is missing" \
+    "missing thin Pi extension refusal did not name the extension and the actionable requirement"
+  assert_absent "$HOME_DIR/state/$id.meta" \
+    "missing thin Pi extension refusal wrote task metadata"
+  [ ! -s "$LAUNCH_LOG" ] || fail "missing thin Pi extension refusal typed a launch command"
+  pass "thin Pi crewmate refuses before its endpoint when an opt-in extension is unavailable"
+}
+
+test_pi_thin_unknown_config_value_keeps_default_launch() {
+  local rec id out status launch
+  id=profile-pi-thin-unknown-z8j
+  rec=$(make_spawn_case profile-pi-thin-unknown pi "$id")
+  read_case_record "$rec"
+  printf '%s\n' 0 > "$HOME_DIR/config/pi-crew-thin"
+
+  out=$(FM_TEST_HOME="$HOME_DIR" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "a non-opt-in config/pi-crew-thin value should still spawn"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_not_contains "$launch" "--no-skills" \
+    "a non-opt-in config/pi-crew-thin value unexpectedly thinned the Pi launch"
+  assert_contains "$launch" "-e '$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts' -e '$HOME_DIR/state/$id.pi-ext.ts'" \
+    "a non-opt-in config/pi-crew-thin value disturbed the default Pi crewmate template"
+  pass "config/pi-crew-thin with a non-opt-in value keeps the default Pi crewmate launch"
 }
 
 test_pi_thin_does_not_change_secondmate_template() {
@@ -813,6 +882,9 @@ test_opencode_threads_model_and_ignores_effort_axis
 test_pi_threads_model_and_max_effort
 test_pi_thin_crewmate_adds_opt_in_flags_and_global_extensions
 test_pi_thin_on_value_is_supported
+test_pi_thin_resolves_under_relocated_pi_agent_dir
+test_pi_thin_missing_extension_refuses_before_endpoint
+test_pi_thin_unknown_config_value_keeps_default_launch
 test_pi_thin_does_not_change_secondmate_template
 test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint
 test_pi_project_settings_exclude_workflow_extension_only
