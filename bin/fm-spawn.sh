@@ -128,6 +128,8 @@
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __PIWORKFLOW__ absolute path to the installed pi-dynamic-workflows extension for a pi crewmate
+#     __PIBACKGROUND__ absolute path to the global background-terminals extension for a thin pi crewmate
+#     __PIRENDERCACHE__ absolute path to the global pi-render-cache extension for a thin pi crewmate
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
 # FM_PI_DYNAMIC_WORKFLOWS_EXTENSION optionally overrides the default global Pi
 # git-package path for the workflow extension and must name an existing absolute
@@ -136,9 +138,13 @@
 # endpoint is created.
 # Pi launch templates disable extension discovery before restoring only the
 # Firstmate extension paths above, plus the explicitly resolved workflow extension
-# for pi crewmates, so user-global packages cannot change worker startup while
-# models, tools, skills, prompts, themes, and context stay normal. The primary
-# launcher and secondmate template never load the workflow extension.
+# for pi crewmates. A normal pi ship/scout can opt into the thinner startup by
+# placing 1 or on in the home-local config/pi-crew-thin file; that adds --no-skills,
+# background-terminals, and pi-render-cache. Both thin extensions resolve under the
+# same PI_CODING_AGENT_DIR-then-~/.pi/agent root as the workflow extension and must
+# exist, so an unusable opt-in refuses the crewmate before its endpoint is created
+# rather than launching without what it promised. The secondmate template never
+# honors that opt-in and never loads the workflow extension.
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
@@ -568,6 +574,9 @@ PROJ=
 ARG3=
 FIRSTMATE_HOME=
 PI_DYNAMIC_WORKFLOWS_EXTENSION=
+PI_THIN_FLAGS=
+PI_THIN_BACKGROUND_EXTENSION=
+PI_THIN_RENDER_CACHE_EXTENSION=
 
 if [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
@@ -593,8 +602,15 @@ else
 fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
 
+# Single owner of where Pi's global agent tree lives, so every globally installed
+# extension this script resolves (workflow, thin opt-in) agrees on one root.
+pi_agent_dir() {
+  printf '%s' "${PI_CODING_AGENT_DIR:-${HOME:-}/.pi/agent}"
+}
+
 pi_dynamic_workflows_extension_path() {
-  local agent_dir=${PI_CODING_AGENT_DIR:-${HOME:-}/.pi/agent}
+  local agent_dir
+  agent_dir=$(pi_agent_dir)
   local extension=${FM_PI_DYNAMIC_WORKFLOWS_EXTENSION:-$agent_dir/git/github.com/QuintinShaw/pi-dynamic-workflows/extensions/workflow.ts}
   case "$extension" in
     /*) ;;
@@ -605,6 +621,38 @@ pi_dynamic_workflows_extension_path() {
   esac
   if [ ! -f "$extension" ]; then
     echo "error: pi crewmate/scout workflow extension is missing: $extension (install pi-dynamic-workflows or set FM_PI_DYNAMIC_WORKFLOWS_EXTENSION to its absolute extensions/workflow.ts path)" >&2
+    return 1
+  fi
+  printf '%s\n' "$extension"
+}
+
+pi_crew_thin_enabled() {
+  local value
+  [ "$KIND" != secondmate ] || return 1
+  [ -f "$CONFIG/pi-crew-thin" ] || return 1
+  value=$(tr -d '[:space:]' < "$CONFIG/pi-crew-thin")
+  case "$value" in
+    1|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# A thin extension is a hard requirement of the opt-in: resolving it here, next to
+# the workflow preflight, keeps every refusal ahead of endpoint and metadata
+# creation instead of leaving an orphaned pane behind a launch that cannot work.
+pi_crew_thin_extension_path() {
+  local label=$1 relative=$2 agent_dir extension
+  agent_dir=$(pi_agent_dir)
+  case "$agent_dir" in
+    /*) ;;
+    *)
+      echo "error: thin pi crewmate launch needs an absolute pi agent dir: $agent_dir (set PI_CODING_AGENT_DIR or an absolute HOME)" >&2
+      return 1
+      ;;
+  esac
+  extension=$agent_dir/$relative
+  if [ ! -f "$extension" ]; then
+    echo "error: thin pi crewmate $label extension is missing: $extension (install it, or remove config/pi-crew-thin to launch a normal pi crewmate)" >&2
     return 1
   fi
   printf '%s\n' "$extension"
@@ -638,7 +686,7 @@ launch_template() {
       if [ "$kind" = secondmate ]; then
         printf '%s%s%s' 'FM_PI_EXTENSION_ISOLATION=1 ' "$harness" ' --no-extensions __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s%s%s' 'FM_PI_EXTENSION_ISOLATION=1 ' "$harness" ' --no-extensions __MODELFLAG____EFFORTFLAG__-e __PIWORKFLOW__ -e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s%s%s' 'FM_PI_EXTENSION_ISOLATION=1 ' "$harness" ' --no-extensions __MODELFLAG____EFFORTFLAG____PITHIN__-e __PIWORKFLOW__ -e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive
@@ -698,6 +746,13 @@ case "$HARNESS" in
   pi|pi-signed)
     if [ "$KIND" != secondmate ] && case "$LAUNCH" in *__PIWORKFLOW__*) true ;; *) false ;; esac; then
       PI_DYNAMIC_WORKFLOWS_EXTENSION=$(pi_dynamic_workflows_extension_path) || exit 1
+      if pi_crew_thin_enabled; then
+        PI_THIN_BACKGROUND_EXTENSION=$(pi_crew_thin_extension_path background-terminals \
+          extensions/background-terminals/index.ts) || exit 1
+        PI_THIN_RENDER_CACHE_EXTENSION=$(pi_crew_thin_extension_path pi-render-cache \
+          npm/node_modules/pi-render-cache/extensions/index.ts) || exit 1
+        PI_THIN_FLAGS='--no-skills -e __PIBACKGROUND__ -e __PIRENDERCACHE__ '
+      fi
     fi
     LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
     ;;
@@ -1699,6 +1754,8 @@ sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 sq_piworkflow=$(shell_quote "$PI_DYNAMIC_WORKFLOWS_EXTENSION")
+sq_pibackground=$(shell_quote "$PI_THIN_BACKGROUND_EXTENSION")
+sq_pirendercache=$(shell_quote "$PI_THIN_RENDER_CACHE_EXTENSION")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
@@ -1710,6 +1767,9 @@ LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 LAUNCH=${LAUNCH//__PIWORKFLOW__/$sq_piworkflow}
+LAUNCH=${LAUNCH//__PITHIN__/$PI_THIN_FLAGS}
+LAUNCH=${LAUNCH//__PIBACKGROUND__/$sq_pibackground}
+LAUNCH=${LAUNCH//__PIRENDERCACHE__/$sq_pirendercache}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
 # inherit firstmate's current environment, so a bare `claude` in the pane falls
