@@ -98,7 +98,8 @@ run_spawn() {
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     CLAUDE_CONFIG_DIR="${FM_TEST_CLAUDE_CONFIG_DIR:-}" \
     FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_TEST_PI_WORKFLOW_EXTENSION:-$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts}" \
-    FM_FAKE_LAUNCH_LOG="$launchlog" GROK_HOME="$home/grok-home" PATH="$fakebin:$PATH" \
+    FM_FAKE_LAUNCH_LOG="$launchlog" GROK_HOME="$home/grok-home" \
+    HOME="${FM_TEST_HOME:-$HOME}" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
 
@@ -505,7 +506,84 @@ test_pi_threads_model_and_max_effort() {
     "pi launch still exports the removed Calm input-reroute binding"
   assert_contains "$launch" "fm-operational-input.sh' encode launch-brief" \
     "pi launch lost the canonical typed launch-brief envelope"
+  assert_not_contains "$launch" "--no-skills" \
+    "default Pi crewmate launch unexpectedly disabled skills"
+  assert_not_contains "$launch" "background-terminals/index.ts" \
+    "default Pi crewmate launch unexpectedly loaded background-terminals"
+  assert_not_contains "$launch" "pi-render-cache/extensions/index.ts" \
+    "default Pi crewmate launch unexpectedly loaded pi-render-cache"
   pass "pi receives --model and --thinking max profile flags"
+}
+
+test_pi_thin_crewmate_adds_opt_in_flags_and_global_extensions() {
+  local rec id out status launch
+  id=profile-pi-thin-z8e
+  rec=$(make_spawn_case profile-pi-thin pi "$id")
+  read_case_record "$rec"
+  mkdir -p \
+    "$HOME_DIR/.pi/agent/extensions/background-terminals" \
+    "$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions"
+  : > "$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts"
+  : > "$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions/index.ts"
+  printf '%s\n' 1 > "$HOME_DIR/config/pi-crew-thin"
+
+  out=$(FM_TEST_HOME="$HOME_DIR" run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --model openai-codex/gpt-5.6-sol --effort max)
+  status=$?
+  expect_code 0 "$status" "thin Pi crewmate spawn should succeed"
+  assert_contains "$out" "spawned $id harness=pi" "thin Pi spawn did not report pi"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "pi --no-extensions --model 'openai-codex/gpt-5.6-sol' --thinking 'max' --no-skills -e '$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts' -e '$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions/index.ts' -e '$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts' -e '$HOME_DIR/state/$id.pi-ext.ts'" \
+    "thin Pi crewmate launch omitted the opt-in flags or global extensions"
+  pass "config/pi-crew-thin=1 adds --no-skills, background-terminals, and pi-render-cache to Pi crewmates"
+}
+
+test_pi_thin_on_value_is_supported() {
+  local rec id out status launch
+  id=profile-pi-thin-on-z8f
+  rec=$(make_spawn_case profile-pi-thin-on pi "$id")
+  read_case_record "$rec"
+  mkdir -p \
+    "$HOME_DIR/.pi/agent/extensions/background-terminals" \
+    "$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions"
+  : > "$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts"
+  : > "$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions/index.ts"
+  printf '%s\n' on > "$HOME_DIR/config/pi-crew-thin"
+
+  out=$(FM_TEST_HOME="$HOME_DIR" run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --scout)
+  status=$?
+  expect_code 0 "$status" "thin Pi scout spawn with on should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--no-skills -e '$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts' -e '$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions/index.ts'" \
+    "config/pi-crew-thin=on did not assemble the thin Pi extensions"
+  pass "config/pi-crew-thin=on enables the same thin Pi launch"
+}
+
+test_pi_thin_does_not_change_secondmate_template() {
+  local rec id out status launch sm
+  id=profile-pi-thin-secondmate-z8g
+  rec=$(make_spawn_case profile-pi-thin-secondmate codex "$id")
+  read_case_record "$rec"
+  printf '%s\n' 1 > "$HOME_DIR/config/pi-crew-thin"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id"
+  sm=$(cd "$sm" && pwd -P)
+
+  out=$(FM_TEST_HOME="$HOME_DIR" run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$sm" --secondmate --harness pi)
+  status=$?
+  expect_code 0 "$status" "thin Pi secondmate spawn should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "pi --no-extensions -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
+    "secondmate Pi launch did not preserve its coordinator template"
+  assert_not_contains "$launch" "--no-skills" \
+    "secondmate Pi launch incorrectly honored the crewmate-only thin flag"
+  assert_not_contains "$launch" "background-terminals/index.ts" \
+    "secondmate Pi launch incorrectly loaded background-terminals"
+  assert_not_contains "$launch" "pi-render-cache/extensions/index.ts" \
+    "secondmate Pi launch incorrectly loaded pi-render-cache"
+  pass "config/pi-crew-thin never changes the Pi secondmate coordinator template"
 }
 
 test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint() {
@@ -733,6 +811,9 @@ test_grok_omits_invalid_max_reasoning_effort
 test_grok_omits_invalid_xhigh_reasoning_effort
 test_opencode_threads_model_and_ignores_effort_axis
 test_pi_threads_model_and_max_effort
+test_pi_thin_crewmate_adds_opt_in_flags_and_global_extensions
+test_pi_thin_on_value_is_supported
+test_pi_thin_does_not_change_secondmate_template
 test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint
 test_pi_project_settings_exclude_workflow_extension_only
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
