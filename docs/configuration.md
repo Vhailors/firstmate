@@ -215,6 +215,10 @@ Its `remove` action excises only the marker-delimited Firstmate region and remov
 For Pi and pi-signed secondmate launches, `fm-spawn.sh` disables extension discovery and starts the selected executable with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts` and `.pi/extensions/fm-primary-turnend-guard.ts`, both already present from the secondmate home's git worktree.
 Pi-family crewmate and scout launches apply the same discovery boundary, explicitly load the installed `pi-dynamic-workflows` `extensions/workflow.ts` by absolute path, and fail before endpoint creation when that extension is unavailable.
 The secondmate template never loads that workflow extension because secondmates are orchestrators that dispatch their own crewmates.
+`config/pi-crew-thin` is a local, gitignored file that opts normal Pi ship and scout launches into a thinner startup when its content is `1` or `on`; any other value or an absent file keeps the default launch.
+The opt-in adds `--no-skills` and loads the globally installed `background-terminals` and `pi-render-cache` extensions by absolute path alongside the workflow extension, leaving the no-extensions boundary, the workflow extension, and turn-end behavior unchanged.
+Both thin extensions resolve under the same `PI_CODING_AGENT_DIR`-then-`~/.pi/agent` root as the workflow extension and must already exist, so a relative root or a missing extension refuses the spawn before endpoint creation instead of launching without what the opt-in promised.
+Pi and pi-signed secondmate coordinators never honor the opt-in, and the file is read per home rather than inherited into secondmate homes.
 
 ## Crew dispatch profiles (config/crew-dispatch.json)
 
