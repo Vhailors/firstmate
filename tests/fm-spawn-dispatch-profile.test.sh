@@ -74,8 +74,6 @@ enable_dispatch_profile() {
     > "$home/config/crew-dispatch.json"
 }
 
-# The thin Pi opt-in requires both globally installed extensions to exist under
-# the resolved Pi agent dir, so every positive thin case seeds them there.
 seed_thin_pi_extensions() {
   local agent_dir=$1
   mkdir -p \
@@ -101,11 +99,6 @@ run_spawn() {
   # explicitly (empty by default) instead of leaking the invoking shell's value,
   # which would make launch assertions depend on the developer's environment.
   # A test opts in to the set case via FM_TEST_CLAUDE_CONFIG_DIR.
-  # FM_PI_DYNAMIC_WORKFLOWS_EXTENSION is pinned to the case fixture for the same
-  # reason; a test opts in to another path via FM_TEST_PI_WORKFLOW_EXTENSION.
-  # PI_CODING_AGENT_DIR is pinned empty so thin-Pi extension resolution falls back
-  # to the case HOME instead of the developer's relocated Pi agent tree; a test
-  # opts in to a relocated root via FM_TEST_PI_CODING_AGENT_DIR.
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
@@ -116,6 +109,12 @@ run_spawn() {
     FM_FAKE_LAUNCH_LOG="$launchlog" GROK_HOME="$home/grok-home" \
     HOME="${FM_TEST_HOME:-$HOME}" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
+}
+
+# Ship spawns carry an explicit delivery contract (AGENTS.md section 7); these
+# tests are about profile resolution, so they pass a fixed valid one.
+run_ship_spawn() {
+  run_spawn "$@" --mode no-mistakes --yolo off
 }
 
 read_case_record() {
@@ -137,7 +136,7 @@ test_no_profile_keeps_claude_profile_defaults() {
   rec=$(make_spawn_case profile-off claude "$id")
   read_case_record "$rec"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "claude spawn without profile flags should succeed"
   assert_contains "$out" "spawned $id harness=claude" "spawn did not report claude"
@@ -164,9 +163,9 @@ test_relative_home_overrides_launch_with_absolute_cross_process_paths() {
       FM_STATE_OVERRIDE=home/state FM_DATA_OVERRIDE=home/data \
       FM_PROJECTS_OVERRIDE=home/projects FM_CONFIG_OVERRIDE=home/config \
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
-      CLAUDE_CONFIG_DIR='' FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts" \
-      FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" GROK_HOME=home/grok-home PATH="$FAKEBIN_DIR:$PATH" \
-      "$SPAWN" "$id" "$PROJ_DIR" 2>&1
+      CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
+      GROK_HOME=home/grok-home PATH="$FAKEBIN_DIR:$PATH" \
+      "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
   )
   status=$?
   expect_code 0 "$status" "spawn with relative home overrides should succeed"
@@ -193,9 +192,9 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
       FM_STATE_OVERRIDE='' FM_DATA_OVERRIDE='' \
       FM_PROJECTS_OVERRIDE=home/projects FM_CONFIG_OVERRIDE=home/config \
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
-      CLAUDE_CONFIG_DIR='' FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts" \
-      FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" GROK_HOME=home/grok-home PATH="$FAKEBIN_DIR:$PATH" \
-      "$SPAWN" "$relative_id" "$PROJ_DIR" 2>&1
+      CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
+      GROK_HOME=home/grok-home PATH="$FAKEBIN_DIR:$PATH" \
+      "$SPAWN" "$relative_id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
   )
   status=$?
   expect_code 0 "$status" "spawn with relative FM_HOME defaults should succeed"
@@ -213,9 +212,9 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
       FM_STATE_OVERRIDE='' FM_DATA_OVERRIDE='' \
       FM_PROJECTS_OVERRIDE="$linked_home/projects" FM_CONFIG_OVERRIDE="$linked_home/config" \
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
-      CLAUDE_CONFIG_DIR='' FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts" \
-      FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" GROK_HOME="$linked_home/grok-home" PATH="$FAKEBIN_DIR:$PATH" \
-      "$SPAWN" "$absolute_id" "$PROJ_DIR" 2>&1
+      CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
+      GROK_HOME="$linked_home/grok-home" PATH="$FAKEBIN_DIR:$PATH" \
+      "$SPAWN" "$absolute_id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
   )
   status=$?
   expect_code 0 "$status" "spawn with absolute symlink-spelled FM_HOME defaults should succeed"
@@ -241,9 +240,9 @@ test_absolute_override_spelling_is_preserved_in_launch_paths() {
       FM_STATE_OVERRIDE="$linked_home/state" FM_DATA_OVERRIDE="$linked_home/data" \
       FM_PROJECTS_OVERRIDE="$linked_home/projects" FM_CONFIG_OVERRIDE="$linked_home/config" \
       FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
-      CLAUDE_CONFIG_DIR='' FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts" \
-      FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" GROK_HOME="$linked_home/grok-home" PATH="$FAKEBIN_DIR:$PATH" \
-      "$SPAWN" "$id" "$PROJ_DIR" 2>&1
+      CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" \
+      GROK_HOME="$linked_home/grok-home" PATH="$FAKEBIN_DIR:$PATH" \
+      "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
   )
   status=$?
   expect_code 0 "$status" "spawn with absolute symlink-spelled overrides should succeed"
@@ -265,7 +264,7 @@ test_unresolvable_relative_overrides_fail_loudly() {
     cd "$CASE_DIR" || exit 1
     FM_ROOT_OVERRIDE='' FM_HOME=missing-home \
       FM_STATE_OVERRIDE='' FM_DATA_OVERRIDE='' \
-      "$SPAWN" "$id" "$PROJ_DIR" 2>&1
+      "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
   )
   status=$?
   expect_code 1 "$status" "spawn with an unresolvable relative home should fail"
@@ -276,7 +275,7 @@ test_unresolvable_relative_overrides_fail_loudly() {
     cd "$CASE_DIR" || exit 1
     FM_ROOT_OVERRIDE='' FM_HOME=home \
       FM_STATE_OVERRIDE=missing-state FM_DATA_OVERRIDE=home/data \
-      "$SPAWN" "$id" "$PROJ_DIR" 2>&1
+      "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
   )
   status=$?
   expect_code 1 "$status" "spawn with an unresolvable relative state override should fail"
@@ -287,7 +286,7 @@ test_unresolvable_relative_overrides_fail_loudly() {
     cd "$CASE_DIR" || exit 1
     FM_ROOT_OVERRIDE='' FM_HOME=home \
       FM_STATE_OVERRIDE=home/state FM_DATA_OVERRIDE=missing-data \
-      "$SPAWN" "$id" "$PROJ_DIR" 2>&1
+      "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
   )
   status=$?
   expect_code 1 "$status" "spawn with an unresolvable relative data override should fail"
@@ -303,7 +302,7 @@ test_active_dispatch_profile_requires_explicit_harness_for_ship() {
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   expect_code 1 "$status" "ship spawn without explicit harness should fail when dispatch profiles are active"
   assert_contains "$out" "config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules" \
@@ -335,7 +334,7 @@ test_active_dispatch_profile_allows_explicit_harness() {
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id" "$PROJ_DIR" --harness codex --model gpt-5 --effort high)
   status=$?
   expect_code 0 "$status" "explicit harness should satisfy active dispatch-profile requirement"
@@ -354,7 +353,7 @@ test_active_dispatch_profile_allows_positional_harness() {
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id" "$PROJ_DIR" codex --model gpt-5 --effort high)
   status=$?
   expect_code 0 "$status" "positional harness should satisfy active dispatch-profile requirement"
@@ -370,7 +369,7 @@ test_active_dispatch_profile_allows_raw_launch_command() {
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id" "$PROJ_DIR" "custom-agent --flag")
   status=$?
   expect_code 0 "$status" "raw launch command should satisfy active dispatch-profile requirement"
@@ -387,7 +386,7 @@ test_claude_threads_model_and_effort() {
   rec=$(make_spawn_case profile-claude claude "$id")
   read_case_record "$rec"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model sonnet --effort high)
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model sonnet --effort high)
   status=$?
   expect_code 0 "$status" "claude spawn with profile flags should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude sonnet high
@@ -403,7 +402,7 @@ test_codex_threads_model_and_effort() {
   rec=$(make_spawn_case profile-codex codex "$id")
   read_case_record "$rec"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model gpt-5 --effort high)
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model gpt-5 --effort high)
   status=$?
   expect_code 0 "$status" "codex spawn with profile flags should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 high
@@ -419,7 +418,7 @@ test_codex_omits_invalid_max_effort() {
   rec=$(make_spawn_case profile-codex-max codex "$id")
   read_case_record "$rec"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model gpt-5 --effort max)
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model gpt-5 --effort max)
   status=$?
   expect_code 0 "$status" "codex spawn with unsupported max effort should omit the effort flag"
   assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 max
@@ -436,7 +435,7 @@ test_grok_threads_model_and_reasoning_effort() {
   rec=$(make_spawn_case profile-grok grok "$id")
   read_case_record "$rec"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model grok-4 --effort high)
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model grok-4 --effort high)
   status=$?
   expect_code 0 "$status" "grok spawn with profile flags should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" grok grok-4 high
@@ -453,7 +452,7 @@ test_grok_omits_invalid_max_reasoning_effort() {
   rec=$(make_spawn_case profile-grok-max grok "$id")
   read_case_record "$rec"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model grok-4 --effort max)
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model grok-4 --effort max)
   status=$?
   expect_code 0 "$status" "grok spawn with unsupported max reasoning effort should omit the effort flag"
   assert_meta_profile "$HOME_DIR/state/$id.meta" grok grok-4 max
@@ -472,7 +471,7 @@ test_grok_omits_invalid_xhigh_reasoning_effort() {
   read_case_record "$rec"
 
   # grok 0.2.99 rejects xhigh (accepted set is only low|medium|high).
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model grok-4 --effort xhigh)
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model grok-4 --effort xhigh)
   status=$?
   expect_code 0 "$status" "grok spawn with unsupported xhigh reasoning effort should omit the effort flag"
   assert_meta_profile "$HOME_DIR/state/$id.meta" grok grok-4 xhigh
@@ -490,7 +489,7 @@ test_opencode_threads_model_and_ignores_effort_axis() {
   rec=$(make_spawn_case profile-opencode opencode "$id")
   read_case_record "$rec"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model anthropic/claude-sonnet-4-5 --effort high)
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model anthropic/claude-sonnet-4-5 --effort high)
   status=$?
   expect_code 0 "$status" "opencode spawn with model and ignored effort should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" opencode anthropic/claude-sonnet-4-5 high
@@ -509,124 +508,62 @@ test_pi_threads_model_and_max_effort() {
   rec=$(make_spawn_case profile-pi pi "$id")
   read_case_record "$rec"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
     --model openai-codex/gpt-5.6-sol --effort max)
   status=$?
   expect_code 0 "$status" "pi spawn with max effort should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi openai-codex/gpt-5.6-sol max
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "FM_PI_HARNESS=pi FM_PI_EXTENSION_ISOLATION=1 pi --no-extensions --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e '$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts' -e '$HOME_DIR/state/$id.pi-ext.ts'" \
-    "pi crewmate launch did not thread the workflow and turn-end extensions after the isolation flag"
+    "pi launch did not isolate extensions or thread the requested workflow, model, and max thinking level"
+  assert_not_contains "$launch" "--no-skills" \
+    "default Pi crewmate launch unexpectedly disabled skills"
   assert_not_contains "$launch" "FM_FIRSTMATE_PI_LAUNCH_BRIEF=" \
     "pi launch still exports the removed Calm input-reroute binding"
   assert_contains "$launch" "fm-operational-input.sh' encode launch-brief" \
     "pi launch lost the canonical typed launch-brief envelope"
-  assert_not_contains "$launch" "--no-skills" \
-    "default Pi crewmate launch unexpectedly disabled skills"
-  assert_not_contains "$launch" "background-terminals/index.ts" \
-    "default Pi crewmate launch unexpectedly loaded background-terminals"
-  assert_not_contains "$launch" "pi-render-cache/extensions/index.ts" \
-    "default Pi crewmate launch unexpectedly loaded pi-render-cache"
   pass "pi receives --model and --thinking max profile flags"
 }
 
-test_pi_thin_crewmate_adds_opt_in_flags_and_global_extensions() {
-  local rec id out status launch
+test_pi_thin_crewmate_adds_opt_in_extensions() {
+  local rec id out status launch agent_dir
   id=profile-pi-thin-z8e
   rec=$(make_spawn_case profile-pi-thin pi "$id")
   read_case_record "$rec"
-  seed_thin_pi_extensions "$HOME_DIR/.pi/agent"
-  printf '%s\n' 1 > "$HOME_DIR/config/pi-crew-thin"
-
-  out=$(FM_TEST_HOME="$HOME_DIR" run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
-    "$id" "$PROJ_DIR" --model openai-codex/gpt-5.6-sol --effort max)
-  status=$?
-  expect_code 0 "$status" "thin Pi crewmate spawn should succeed"
-  assert_contains "$out" "spawned $id harness=pi" "thin Pi spawn did not report pi"
-  launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "pi --no-extensions --model 'openai-codex/gpt-5.6-sol' --thinking 'max' --no-skills -e '$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts' -e '$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions/index.ts' -e '$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts' -e '$HOME_DIR/state/$id.pi-ext.ts'" \
-    "thin Pi crewmate launch omitted the opt-in flags or global extensions"
-  pass "config/pi-crew-thin=1 adds --no-skills, background-terminals, and pi-render-cache to Pi crewmates"
-}
-
-test_pi_thin_on_value_is_supported() {
-  local rec id out status launch
-  id=profile-pi-thin-on-z8f
-  rec=$(make_spawn_case profile-pi-thin-on pi "$id")
-  read_case_record "$rec"
-  seed_thin_pi_extensions "$HOME_DIR/.pi/agent"
-  printf '%s\n' '  on  ' > "$HOME_DIR/config/pi-crew-thin"
-
-  out=$(FM_TEST_HOME="$HOME_DIR" run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
-    "$id" "$PROJ_DIR" --scout)
-  status=$?
-  expect_code 0 "$status" "thin Pi scout spawn with on should succeed"
-  launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "--no-skills -e '$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts' -e '$HOME_DIR/.pi/agent/npm/node_modules/pi-render-cache/extensions/index.ts'" \
-    "config/pi-crew-thin=on did not assemble the thin Pi extensions"
-  pass "config/pi-crew-thin=on enables the same thin Pi launch even when padded with whitespace"
-}
-
-test_pi_thin_resolves_under_relocated_pi_agent_dir() {
-  local rec id out status launch agent_dir
-  id=profile-pi-thin-agentdir-z8h
-  rec=$(make_spawn_case profile-pi-thin-agentdir pi "$id")
-  read_case_record "$rec"
-  agent_dir="$CASE_DIR/relocated-pi-agent"
+  agent_dir="$CASE_DIR/pi-agent"
   seed_thin_pi_extensions "$agent_dir"
-  seed_thin_pi_extensions "$HOME_DIR/.pi/agent"
   printf '%s\n' 1 > "$HOME_DIR/config/pi-crew-thin"
 
   out=$(FM_TEST_HOME="$HOME_DIR" FM_TEST_PI_CODING_AGENT_DIR="$agent_dir" \
-    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" --model openai-codex/gpt-5.6-sol --effort max)
   status=$?
-  expect_code 0 "$status" "thin Pi spawn under a relocated agent dir should succeed"
+  expect_code 0 "$status" "thin Pi crewmate spawn should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "--no-skills -e '$agent_dir/extensions/background-terminals/index.ts' -e '$agent_dir/npm/node_modules/pi-render-cache/extensions/index.ts'" \
-    "thin Pi extensions ignored PI_CODING_AGENT_DIR"
-  assert_not_contains "$launch" "$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts" \
-    "thin Pi extensions still resolved under the unused HOME agent tree"
-  pass "thin Pi extensions resolve under PI_CODING_AGENT_DIR like the workflow extension"
+  assert_contains "$launch" "--no-skills -e '$agent_dir/extensions/background-terminals/index.ts' -e '$agent_dir/npm/node_modules/pi-render-cache/extensions/index.ts' -e '$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts'" \
+    "thin Pi crewmate launch omitted its explicit extensions"
+  pass "config/pi-crew-thin adds the thin extension set to Pi crewmates"
 }
 
-test_pi_thin_missing_extension_refuses_before_endpoint() {
-  local rec id out status
+test_pi_thin_missing_extension_refuses_before_metadata() {
+  local rec id out status agent_dir
   id=profile-pi-thin-missing-z8i
   rec=$(make_spawn_case profile-pi-thin-missing pi "$id")
   read_case_record "$rec"
-  mkdir -p "$HOME_DIR/.pi/agent/extensions/background-terminals"
-  : > "$HOME_DIR/.pi/agent/extensions/background-terminals/index.ts"
-  printf '%s\n' 1 > "$HOME_DIR/config/pi-crew-thin"
+  agent_dir="$CASE_DIR/pi-agent"
+  mkdir -p "$agent_dir/extensions/background-terminals"
+  : > "$agent_dir/extensions/background-terminals/index.ts"
+  printf '%s\n' on > "$HOME_DIR/config/pi-crew-thin"
 
-  out=$(FM_TEST_HOME="$HOME_DIR" \
-    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" 2>&1)
+  out=$(FM_TEST_HOME="$HOME_DIR" FM_TEST_PI_CODING_AGENT_DIR="$agent_dir" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
-  expect_code 1 "$status" "a missing thin Pi extension should refuse the crewmate spawn"
+  expect_code 1 "$status" "missing thin Pi extension should refuse the spawn"
   assert_contains "$out" "thin pi crewmate pi-render-cache extension is missing" \
-    "missing thin Pi extension refusal did not name the extension and the actionable requirement"
-  assert_absent "$HOME_DIR/state/$id.meta" \
-    "missing thin Pi extension refusal wrote task metadata"
-  [ ! -s "$LAUNCH_LOG" ] || fail "missing thin Pi extension refusal typed a launch command"
-  pass "thin Pi crewmate refuses before its endpoint when an opt-in extension is unavailable"
-}
-
-test_pi_thin_unknown_config_value_keeps_default_launch() {
-  local rec id out status launch
-  id=profile-pi-thin-unknown-z8j
-  rec=$(make_spawn_case profile-pi-thin-unknown pi "$id")
-  read_case_record "$rec"
-  printf '%s\n' 0 > "$HOME_DIR/config/pi-crew-thin"
-
-  out=$(FM_TEST_HOME="$HOME_DIR" \
-    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
-  status=$?
-  expect_code 0 "$status" "a non-opt-in config/pi-crew-thin value should still spawn"
-  launch=$(cat "$LAUNCH_LOG")
-  assert_not_contains "$launch" "--no-skills" \
-    "a non-opt-in config/pi-crew-thin value unexpectedly thinned the Pi launch"
-  assert_contains "$launch" "-e '$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts' -e '$HOME_DIR/state/$id.pi-ext.ts'" \
-    "a non-opt-in config/pi-crew-thin value disturbed the default Pi crewmate template"
-  pass "config/pi-crew-thin with a non-opt-in value keeps the default Pi crewmate launch"
+    "missing thin Pi extension refusal did not name the requirement"
+  assert_absent "$HOME_DIR/state/$id.meta" "missing thin Pi extension wrote task metadata"
+  [ ! -s "$LAUNCH_LOG" ] || fail "missing thin Pi extension typed a launch command"
+  pass "thin Pi refuses before metadata when an opt-in extension is missing"
 }
 
 test_pi_thin_does_not_change_secondmate_template() {
@@ -637,43 +574,43 @@ test_pi_thin_does_not_change_secondmate_template() {
   printf '%s\n' 1 > "$HOME_DIR/config/pi-crew-thin"
   sm="$CASE_DIR/secondmate-home"
   make_seeded_secondmate_home "$sm" "$id"
+  mkdir -p "$sm/.pi/extensions"
+  : > "$sm/.pi/extensions/fm-primary-turnend-guard.ts"
+  : > "$sm/.pi/extensions/fm-primary-pi-watch.ts"
   sm=$(cd "$sm" && pwd -P)
 
   out=$(FM_TEST_HOME="$HOME_DIR" run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id" "$sm" --secondmate --harness pi)
   status=$?
-  expect_code 0 "$status" "thin Pi secondmate spawn should succeed"
+  expect_code 0 "$status" "Pi secondmate spawn should succeed with thin config present"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "pi --no-extensions -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
-    "secondmate Pi launch did not preserve its coordinator template"
+  assert_contains "$launch" "FM_PI_EXTENSION_ISOLATION=1 pi --no-extensions -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
+    "Pi secondmate did not preserve its isolated coordinator template"
+  assert_not_contains "$launch" "pi-dynamic-workflows" \
+    "Pi secondmate incorrectly loaded workflow fan-out"
   assert_not_contains "$launch" "--no-skills" \
-    "secondmate Pi launch incorrectly honored the crewmate-only thin flag"
-  assert_not_contains "$launch" "background-terminals/index.ts" \
-    "secondmate Pi launch incorrectly loaded background-terminals"
-  assert_not_contains "$launch" "pi-render-cache/extensions/index.ts" \
-    "secondmate Pi launch incorrectly loaded pi-render-cache"
-  pass "config/pi-crew-thin never changes the Pi secondmate coordinator template"
+    "Pi secondmate incorrectly honored the crewmate-only thin flag"
+  pass "Pi secondmates stay isolated from workflow fan-out and thin-worker config"
 }
 
-test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint() {
+test_pi_crewmate_missing_workflow_refuses_before_metadata() {
   local rec id out status
   id=profile-pi-workflow-missing-z8a
   rec=$(make_spawn_case profile-pi-workflow-missing pi "$id")
   read_case_record "$rec"
 
   out=$(FM_TEST_PI_WORKFLOW_EXTENSION="$CASE_DIR/missing-workflow.ts" \
-    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" 2>&1)
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
-  expect_code 1 "$status" "a missing Pi workflow extension should refuse the crewmate spawn"
+  expect_code 1 "$status" "missing Pi workflow extension should refuse the spawn"
   assert_contains "$out" "pi crewmate/scout workflow extension is missing" \
-    "missing Pi workflow extension refusal did not name both gated kinds and the actionable requirement"
-  assert_absent "$HOME_DIR/state/$id.meta" \
-    "missing Pi workflow extension refusal wrote task metadata"
-  [ ! -s "$LAUNCH_LOG" ] || fail "missing Pi workflow extension refusal typed a launch command"
-  pass "Pi crewmate refuses safely when the workflow extension is unavailable"
+    "missing Pi workflow extension refusal did not name the requirement"
+  assert_absent "$HOME_DIR/state/$id.meta" "missing Pi workflow extension wrote task metadata"
+  [ ! -s "$LAUNCH_LOG" ] || fail "missing Pi workflow extension typed a launch command"
+  pass "Pi workers refuse before metadata when workflow fan-out is unavailable"
 }
 
-test_pi_project_settings_exclude_workflow_extension_only() {
+test_pi_project_settings_disable_workflow_autoload() {
   local out status
   out=$(python3 - "$ROOT/.pi/settings.json" 2>&1 <<'PY'
 import json
@@ -681,30 +618,17 @@ import sys
 from pathlib import Path
 
 data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-entries = [
-    pkg
-    for pkg in data.get("packages", [])
-    if isinstance(pkg, dict) and "pi-dynamic-workflows" in str(pkg.get("source", ""))
-]
+entries = [pkg for pkg in data.get("packages", []) if "pi-dynamic-workflows" in str(pkg.get("source", ""))]
 if len(entries) != 1:
-    raise SystemExit(f"expected exactly one pi-dynamic-workflows package entry, found {len(entries)}")
+    raise SystemExit(f"expected one pi-dynamic-workflows entry, found {len(entries)}")
 entry = entries[0]
-if entry.get("autoload") is not False:
-    raise SystemExit("pi-dynamic-workflows entry must set autoload false to stay a delta over the global entry")
-if entry.get("extensions") != ["!**"]:
-    raise SystemExit(f"pi-dynamic-workflows extensions filter must disable every extension, got {entry.get('extensions')!r}")
-stripped = [key for key in ("skills", "prompts", "themes") if key in entry]
-if stripped:
-    raise SystemExit(
-        "pi-dynamic-workflows entry also filters "
-        + ", ".join(stripped)
-        + "; the override is directory-scoped, so that strips those resources from Pi crewmates and scouts in a Firstmate worktree"
-    )
+if entry.get("autoload") is not False or entry.get("extensions") != ["!**"]:
+    raise SystemExit("pi-dynamic-workflows must disable project autoload while remaining explicitly loadable")
 PY
   )
   status=$?
-  expect_code 0 "$status" "tracked .pi/settings.json broke the Pi workflow role split: $out"
-  pass "tracked Pi project override excludes only the workflow extension"
+  expect_code 0 "$status" "tracked Pi workflow isolation settings are invalid: $out"
+  pass "tracked Pi settings disable workflow extension autoload"
 }
 
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
@@ -713,7 +637,7 @@ test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
   rec=$(make_spawn_case profile-pi-signed pi-signed "$id")
   read_case_record "$rec"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
     --model openai-codex/gpt-5.6-sol --effort max)
   status=$?
   expect_code 0 "$status" "pi-signed spawn with max effort should succeed"
@@ -725,6 +649,18 @@ test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
   assert_contains "$launch" "fm-operational-input.sh' encode launch-brief" \
     "pi-signed launch lost the canonical typed launch-brief envelope"
   assert_present "$HOME_DIR/state/$id.pi-ext.ts" "pi-signed launch did not install Pi's turn-end extension"
+  assert_present "$HOME_DIR/state/$id.busy-gen" "pi-signed spawn did not arm the busy-state contract"
+  assert_contains "$(cat "$HOME_DIR/state/$id.busy-state")" "state=busy source=fm-spawn" \
+    "pi-signed spawn did not seed the busy-state record from the launch brief"
+  local ext gen
+  ext=$(cat "$HOME_DIR/state/$id.pi-ext.ts")
+  gen=$(cat "$HOME_DIR/state/$id.busy-gen")
+  assert_contains "$ext" 'pi.on("agent_start"' "pi extension lost the semantic agent_start busy edge"
+  assert_contains "$ext" 'pi.on("agent_settled"' "pi extension lost the semantic agent_settled idle edge"
+  assert_contains "$ext" 'ctx.isIdle()' "pi extension no longer confirms idle with ctx.isIdle()"
+  assert_contains "$ext" "\"--gen\", \"$gen\"" "pi extension does not carry the armed incarnation gen"
+  assert_contains "$ext" '"--source", "pi-ext"' "pi extension does not attribute its semantic source"
+  assert_contains "$ext" 'pi.on("turn_end"' "pi extension lost the turn-end notification touch"
   pass "pi-signed shares Pi launch semantics while preserving its configured and recorded identity"
 }
 
@@ -740,9 +676,8 @@ test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata() {
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
-    FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts" \
     FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" PATH="$FAKEBIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
-    "$SPAWN" "$id" "$PROJ_DIR" 2>&1)
+    "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1)
   status=$?
   expect_code 1 "$status" "a missing pi-signed executable should refuse the spawn"
   assert_contains "$out" "pi-signed executable not found on PATH" \
@@ -771,8 +706,6 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "FM_PI_HARNESS=pi-signed FM_PI_EXTENSION_ISOLATION=1 pi-signed --no-extensions -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
     "pi-signed secondmate did not share Pi's primary extension launch shape"
-  assert_not_contains "$launch" "pi-dynamic-workflows" \
-    "pi-signed secondmate must not load the workflow extension"
   pass "pi-signed is a distinct persistent secondmate runtime with shared Pi supervision semantics"
 }
 
@@ -784,7 +717,7 @@ test_batch_forwards_shared_profile_flags() {
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
 
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --harness codex --model gpt-5 --effort high)
   status=$?
   expect_code 0 "$status" "batch spawn with shared profile flags should succeed"
@@ -802,7 +735,7 @@ test_claude_forwards_firstmate_config_dir_when_set() {
   read_case_record "$rec"
 
   out=$(FM_TEST_CLAUDE_CONFIG_DIR="/opt/test/claude-work" \
-    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "claude spawn with CLAUDE_CONFIG_DIR set should succeed"
   launch=$(cat "$LAUNCH_LOG")
@@ -819,7 +752,7 @@ test_claude_omits_config_dir_prefix_when_unset() {
 
   # run_spawn pins CLAUDE_CONFIG_DIR empty by default, exercising the single-store
   # default path where fm-spawn adds no prefix.
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "claude spawn without CLAUDE_CONFIG_DIR should succeed"
   launch=$(cat "$LAUNCH_LOG")
@@ -835,7 +768,7 @@ test_non_claude_harness_ignores_config_dir() {
   read_case_record "$rec"
 
   out=$(FM_TEST_CLAUDE_CONFIG_DIR="/opt/test/claude-work" \
-    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "codex spawn with CLAUDE_CONFIG_DIR set should succeed"
   launch=$(cat "$LAUNCH_LOG")
@@ -880,14 +813,11 @@ test_grok_omits_invalid_max_reasoning_effort
 test_grok_omits_invalid_xhigh_reasoning_effort
 test_opencode_threads_model_and_ignores_effort_axis
 test_pi_threads_model_and_max_effort
-test_pi_thin_crewmate_adds_opt_in_flags_and_global_extensions
-test_pi_thin_on_value_is_supported
-test_pi_thin_resolves_under_relocated_pi_agent_dir
-test_pi_thin_missing_extension_refuses_before_endpoint
-test_pi_thin_unknown_config_value_keeps_default_launch
+test_pi_thin_crewmate_adds_opt_in_extensions
+test_pi_thin_missing_extension_refuses_before_metadata
 test_pi_thin_does_not_change_secondmate_template
-test_pi_crewmate_missing_workflow_extension_refuses_before_endpoint
-test_pi_project_settings_exclude_workflow_extension_only
+test_pi_crewmate_missing_workflow_refuses_before_metadata
+test_pi_project_settings_disable_workflow_autoload
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
 test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity

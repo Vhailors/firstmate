@@ -2,7 +2,7 @@ Mode: Pi extension background wake.
 
 When this session owns supervision and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
-2. Confirm the Pi-family primary was launched through `__FM_PI_LAUNCHER__`, which disables extension discovery and explicitly loads both required extensions; if not, restart through that launcher.
+2. Confirm the Pi primary was launched through `__FM_PI_LAUNCHER__`, which disables extension discovery and explicitly loads both required extensions; if not, restart through that launcher.
 3. First cycle only: make the one required `fm_watch_arm_pi` call.
    Use `/fm-watch-arm-pi` only as a human-entered fallback.
    Never run `bin/fm-watch-arm.sh` through Pi's bash tool because that foreground arm can wedge the agent and bypasses extension-owned cleanup.
@@ -20,4 +20,4 @@ When this session owns supervision and away mode is not active:
 
 The turn-end guard extension lives at `__FM_PI_TURNEND_EXT__`.
 The watcher extension lives at `__FM_PI_EXT__`.
-Both are tracked, project-local `.pi/extensions/*.ts` files that the scoped primary launcher loads explicitly; `bin/fm-session-start.sh` reports when the running Pi-family session has not loaded both required extensions, reports separately when they loaded without the discovery boundary, and preserves the selected identity in its repair command.
+Both are tracked, project-local `.pi/extensions/*.ts` files that `__FM_PI_LAUNCHER__` loads explicitly with extension discovery disabled; `bin/fm-session-start.sh` reports when the running Pi session is outside that boundary.

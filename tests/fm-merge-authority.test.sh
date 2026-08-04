@@ -545,7 +545,7 @@ run_spawn_respawn() {
     FM_SPAWN_NO_GUARD=1 \
     FM_BACKEND=tmux \
     FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_TEST_PI_WORKFLOW_EXTENSION:-$PI_WORKFLOW_FIXTURE}" \
-    "$ROOT/bin/fm-spawn.sh" "$@" 2>&1
+    "$ROOT/bin/fm-spawn.sh" "$@" --scout 2>&1
 }
 
 test_respawn_keeps_block_until_explicitly_lifted() {
@@ -658,7 +658,7 @@ run_full_spawn() {
     FM_PROJECTS_OVERRIDE="$FULL_HOME/projects" FM_CONFIG_OVERRIDE="$FULL_HOME/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$FULL_WT" TMUX="fake,1,0" \
     FM_BACKEND=tmux CLAUDE_CONFIG_DIR='' PATH="$FULL_FAKEBIN:$PATH" \
-    "$ROOT/bin/fm-spawn.sh" "$@" 2>&1
+    "$ROOT/bin/fm-spawn.sh" "$@" --mode no-mistakes --yolo off 2>&1
 }
 
 # The refusal both merge actions apply, asked directly of one published meta.

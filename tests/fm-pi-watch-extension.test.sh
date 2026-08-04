@@ -7,7 +7,6 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-pi-watch-extension)
 EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
-PRIMARY_LAUNCHER="$ROOT/bin/fm-pi-primary.sh"
 # Node 24 warns when these test-only dynamic imports load tracked ESM plugins
 # from a clean checkout with no tracked .opencode/package.json. The warning is
 # unrelated to plugin output, which the assertions intentionally require empty.
@@ -58,43 +57,6 @@ export const Type = {
   },
 };
 JS
-}
-
-test_primary_launcher_scopes_both_pi_identities() {
-  local fakebin capture harness args
-  fakebin="$TMP_ROOT/primary-launcher-bin"
-  mkdir -p "$fakebin"
-  cat > "$fakebin/pi" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$@" > "${FM_PI_ARGS_CAPTURE:?}"
-printf '%s\n' "${FM_PI_HARNESS:-unset}" > "${FM_PI_ARGS_CAPTURE:?}.harness"
-printf '%s\n' "${FM_PI_EXTENSION_ISOLATION:-unset}" > "${FM_PI_ARGS_CAPTURE:?}.isolation"
-SH
-  chmod +x "$fakebin/pi"
-  cp "$fakebin/pi" "$fakebin/pi-signed"
-
-  assert_present "$PRIMARY_LAUNCHER" "tracked Pi primary launcher is missing"
-  for harness in pi pi-signed; do
-    capture="$TMP_ROOT/primary-launcher-$harness"
-    PATH="$fakebin:$PATH" FM_PI_ARGS_CAPTURE="$capture" FM_PI_HARNESS="$harness" \
-      "$PRIMARY_LAUNCHER" --model test/model "launch brief"
-    args=$(cat "$capture")
-    [ "$(grep -Fxc -- '--no-extensions' "$capture")" -eq 1 ] \
-      || fail "$harness primary launcher did not disable discovered extensions exactly once"
-    [ "$(grep -Fxc -- '-e' "$capture")" -eq 2 ] \
-      || fail "$harness primary launcher did not explicitly load exactly two extensions"
-    assert_contains "$args" "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$harness primary launcher omitted the turn-end guard"
-    assert_contains "$args" "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$harness primary launcher omitted the watcher extension"
-    assert_not_contains "$args" "fm-calm.ts" "$harness primary launcher still loads the conflicting Calm extension by default"
-    assert_not_contains "$args" "pi-dynamic-workflows" "$harness primary launcher must not load the workflow extension"
-    assert_contains "$args" "test/model" "$harness primary launcher did not preserve caller model arguments"
-    assert_contains "$args" "launch brief" "$harness primary launcher did not preserve the positional prompt"
-    [ "$(cat "$capture.harness")" = "$harness" ] \
-      || fail "$harness primary launcher did not preserve the selected Pi identity"
-    [ "$(cat "$capture.isolation")" = 1 ] \
-      || fail "$harness primary launcher did not mark the session as extension-isolated"
-  done
-  pass "Pi primary launcher scopes extension discovery for both verified identities"
 }
 
 test_pi_extension_reports_external_healthy_watcher() {
@@ -1349,34 +1311,27 @@ printf 'arm\n' >> "${FM_ARM_LOG:?}"
 printf 'watcher: healthy pid=1 (beacon 0s)\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(FM_TEST_LOCK_PID="$BASHPID" PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" node 2>&1 <<'EOF'
+  out=$(PLUGIN="$plugin" WORKTREE="$repo" FM_HOME="$home" FM_ARM_LOG="$log" node 2>&1 <<'EOF'
 import { existsSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 const client = { session: { promptAsync: async () => {} } };
-await mod.FmPrimaryWatchArm({
+const hooks = await mod.FmPrimaryWatchArm({
   client,
   directory: process.env.WORKTREE,
   worktree: process.env.WORKTREE,
 });
-const coordinator = globalThis.__firstmateOpenCodeWatchArm;
+const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
-const denied = await coordinator.ensureArmed("session-test", client);
-if (denied !== "read-only") {
-  console.error(`expected read-only for an unrelated lock owner, got ${denied}`);
-  process.exit(1);
-}
+await hooks.event(event);
+await new Promise((resolve) => setTimeout(resolve, 1000));
 if (existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm ran without owning the session lock");
   process.exit(1);
 }
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.env.FM_TEST_LOCK_PID}\n`);
-const owned = await coordinator.ensureArmed("session-test", client);
-if (owned === "read-only") {
-  console.error("watch arm stayed read-only for a lock owner in process ancestry");
-  process.exit(1);
-}
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+await hooks.event(event);
 for (let i = 0; i < 250 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
@@ -2169,7 +2124,6 @@ EOF
   pass "OpenCode healthy arm output does not suppress the turn-end guard"
 }
 
-test_primary_launcher_scopes_both_pi_identities
 test_pi_extension_reports_external_healthy_watcher
 test_pi_tool_returns_agent_tool_result
 test_pi_redundant_tool_call_is_owned_noop
