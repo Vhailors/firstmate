@@ -50,7 +50,7 @@ case "${1:-}" in
       for a in "$@"; do
         case "$a" in
           "export TRACEPARENT="*)
-            chmod a-w "$FM_FAKE_META_PATH"
+            chmod a-w "$(dirname "$FM_FAKE_META_PATH")"
             ;;
         esac
       done
@@ -331,6 +331,7 @@ test_failed_metadata_append_unsets_carrier_and_still_launches() {
   out=$(FM_FAKE_TRACE_METADATA_APPEND_FAIL=1 \
     run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID" "$PROJ_DIR")
   status=$?
+  chmod u+w "$HOME_DIR/state"
   expect_code 0 "$status" "failed traceparent metadata append must not abort spawn"
   assert_contains "$out" "spawned $CASE_ID" "spawn should report success after failed metadata append"
   meta="$HOME_DIR/state/$CASE_ID.meta"

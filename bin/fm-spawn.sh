@@ -2293,6 +2293,10 @@ fi
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
+CHROME_USER_DATA_DIR=${CHROME_DEVTOOLS_AXI_USER_DATA_DIR:-${HOME}/.chrome-llm-profile}
+CHROME_HEADED=${CHROME_DEVTOOLS_AXI_HEADED:-1}
+CHROME_AUTO_CONNECT=${CHROME_DEVTOOLS_AXI_AUTO_CONNECT:-0}
+spawn_send_text_line "$T" "export CHROME_DEVTOOLS_AXI_USER_DATA_DIR=$(shell_quote "$CHROME_USER_DATA_DIR") CHROME_DEVTOOLS_AXI_HEADED=$(shell_quote "$CHROME_HEADED") CHROME_DEVTOOLS_AXI_AUTO_CONNECT=$(shell_quote "$CHROME_AUTO_CONNECT")"
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
 # entirely when trace context is off.

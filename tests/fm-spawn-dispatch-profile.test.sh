@@ -5,6 +5,7 @@
 # fake tmux pane and a real isolated git worktree. The fake tmux captures the
 # literal launch command sent with `tmux send-keys -l`, so assertions pin the
 # command firstmate would run without starting any real harness.
+# shellcheck disable=SC2100  # task ids ending in z<number> are strings, not arithmetic
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -33,6 +34,11 @@ case "${1:-}" in
         if [ "$prev" = "-l" ]; then
           printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG"
         fi
+        case "$a" in
+          'export CHROME_DEVTOOLS_AXI_'*)
+            [ -z "${FM_FAKE_ENV_LOG:-}" ] || printf '%s\n' "$a" >> "$FM_FAKE_ENV_LOG"
+            ;;
+        esac
         prev=$a
       done
     fi
@@ -95,6 +101,7 @@ run_spawn() {
   local home=$1 wt=$2 fakebin=$3 launchlog=$4
   shift 4
   : > "$launchlog"
+  : > "$CASE_DIR/env.log"
   # CLAUDE_CONFIG_DIR is forwarded onto claude launches by fm-spawn, so pin it
   # explicitly (empty by default) instead of leaking the invoking shell's value,
   # which would make launch assertions depend on the developer's environment.
@@ -104,9 +111,12 @@ run_spawn() {
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     CLAUDE_CONFIG_DIR="${FM_TEST_CLAUDE_CONFIG_DIR:-}" \
+    CHROME_DEVTOOLS_AXI_USER_DATA_DIR="${FM_TEST_CHROME_USER_DATA_DIR:-}" \
+    CHROME_DEVTOOLS_AXI_HEADED="${FM_TEST_CHROME_HEADED:-}" \
+    CHROME_DEVTOOLS_AXI_AUTO_CONNECT="${FM_TEST_CHROME_AUTO_CONNECT:-}" \
     FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_TEST_PI_WORKFLOW_EXTENSION:-$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts}" \
     PI_CODING_AGENT_DIR="${FM_TEST_PI_CODING_AGENT_DIR:-}" \
-    FM_FAKE_LAUNCH_LOG="$launchlog" GROK_HOME="$home/grok-home" \
+    FM_FAKE_LAUNCH_LOG="$launchlog" FM_FAKE_ENV_LOG="$CASE_DIR/env.log" GROK_HOME="$home/grok-home" \
     HOME="${FM_TEST_HOME:-$HOME}" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
@@ -146,6 +156,44 @@ test_no_profile_keeps_claude_profile_defaults() {
   expected="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
   [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
   pass "no --model/--effort records defaults and types the claude launch instructions"
+}
+
+test_spawn_propagates_portable_chrome_defaults() {
+  local rec id out status launch
+  id=profile-chrome-default-z1a
+  rec=$(make_spawn_case profile-chrome-default claude "$id")
+  read_case_record "$rec"
+
+  out=$(FM_TEST_HOME="$HOME_DIR" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "spawn with portable Chrome defaults should succeed"
+  launch=$(cat "$CASE_DIR/env.log")
+  assert_contains "$launch" "export CHROME_DEVTOOLS_AXI_USER_DATA_DIR='$HOME_DIR/.chrome-llm-profile' CHROME_DEVTOOLS_AXI_HEADED='1' CHROME_DEVTOOLS_AXI_AUTO_CONNECT='0'" \
+    "spawn did not propagate portable headed Chrome defaults through the pane environment channel"
+  assert_not_contains "$launch" "$HOME/.chrome-llm-profile" \
+    "spawn default leaked the operator's actual HOME into the isolated fixture"
+  pass "spawn propagates portable Chrome defaults without relying on the operator HOME"
+}
+
+test_spawn_preserves_chrome_overrides() {
+  local rec id out status launch profile
+  id=profile-chrome-override-z1b
+  rec=$(make_spawn_case profile-chrome-override claude "$id")
+  read_case_record "$rec"
+  profile="$CASE_DIR/shared-profile"
+
+  out=$(FM_TEST_HOME="$HOME_DIR" \
+    FM_TEST_CHROME_USER_DATA_DIR="$profile" \
+    FM_TEST_CHROME_HEADED=0 \
+    FM_TEST_CHROME_AUTO_CONNECT=1 \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "spawn with Chrome overrides should succeed"
+  launch=$(cat "$CASE_DIR/env.log")
+  assert_contains "$launch" "export CHROME_DEVTOOLS_AXI_USER_DATA_DIR='$profile' CHROME_DEVTOOLS_AXI_HEADED='0' CHROME_DEVTOOLS_AXI_AUTO_CONNECT='1'" \
+    "spawn replaced explicit Chrome overrides"
+  pass "spawn preserves caller Chrome overrides through the current pane environment channel"
 }
 
 test_relative_home_overrides_launch_with_absolute_cross_process_paths() {
@@ -796,6 +844,8 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
 }
 
 test_no_profile_keeps_claude_profile_defaults
+test_spawn_propagates_portable_chrome_defaults
+test_spawn_preserves_chrome_overrides
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
 test_absolute_override_spelling_is_preserved_in_launch_paths

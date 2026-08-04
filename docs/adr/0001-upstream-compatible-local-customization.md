@@ -1,7 +1,7 @@
 # ADR 0001: Keep local workflow customizations rebasable on upstream
 
 - Status: accepted
-- Date: 2026-07-27
+- Date: 2026-08-04
 - Supersedes: nothing
 
 ## Context
@@ -103,14 +103,16 @@ Current known local customization areas, their authoritative owners, and how exp
 | Area | Where it lives | Authoritative owner | Upstream-overlap risk |
 | --- | --- | --- | --- |
 | Pi primary launcher | `bin/fm-pi-primary.sh`, a tracked file upstream does not have | the script's own header, with a row in [`docs/scripts.md`](../scripts.md) | low; no upstream commit edits this path |
+| Portable Chrome and captain decision board | default resolution in `bin/fm-pi-primary.sh` and pane-environment propagation in `bin/fm-spawn.sh` | both script headers, with behavior coverage in `tests/fm-pi-primary.test.sh` and `tests/fm-spawn-dispatch-profile.test.sh` | medium; spawn environment delivery is an upstream hotspot, while the primary launcher is local-only |
 | Pi launch templates for workers and secondmates | a few lines in `bin/fm-spawn.sh` | the `bin/fm-spawn.sh` header | high; each new upstream adapter inserts material beside these lines |
+| Pi worker workflow and thin launch profiles | `.pi/settings.json`, `config/pi-crew-thin` resolution in `bin/fm-spawn.sh`, and the narrow configuration prose | the spawn header for mechanics and [`docs/configuration.md`](../configuration.md) for current behavior | high; upstream adapter and package-loading changes share the same launch template |
 | Pi supervision protocol and session-start diagnostic | `bin/fm-supervision-instructions.sh`, `bin/fm-session-start.sh`, [`docs/supervision-protocols/pi.md`](../supervision-protocols/pi.md) | `docs/supervision-protocols/` | medium; upstream rewrites protocol text whenever supervision changes |
 | Pi launch-scope facts for agents | [`harness-adapters`](../../.agents/skills/harness-adapters/SKILL.md) | that skill | high; upstream rewrites adapter facts on every harness release |
 | Pi setup and current-behavior prose | [`README.md`](../../README.md), [`docs/configuration.md`](../configuration.md), [`docs/calm.md`](../calm.md) | README for setup routing, `docs/configuration.md` for the schema | high; these paragraphs are where the observed rebase conflicts landed |
 | Pi command shapes inside maintainer verification | [`docs/arm-pretool-check.md`](../arm-pretool-check.md), [`docs/cd-guard.md`](../cd-guard.md), [`docs/verification/supervision.md`](../verification/supervision.md) | each verification document | low to change, but the evidence must be re-run rather than reworded when the launch shape moves |
 | Test routing for the local customizations | a few lines in `bin/fm-test-run.sh`: the launcher's changed-file family, the merge-authority suite's family, and the `FM_PI_EXTENSION_ISOLATION` environment scrub | `bin/fm-test-run.sh --help` | medium; upstream edits the same maps when it adds scripts |
-| Explicit do-not-merge enforcement | `bin/fm-merge-authority-lib.sh` plus narrow call sites in the spawn, merge, session-start, and re-link helpers | the library header and `tests/fm-merge-authority.test.sh` | medium; upstream may change spawn metadata or the guarded merge entry points |
-| Host-independent and leak-free test fixtures | `tests/lib.sh`'s file-backed cleanup registry, `tests/fm-watch-triage.test.sh`'s reaping EXIT trap, the coverage guard's collation pin in `bin/fm-test-run.sh`, and the host-tool and redraw-timing isolation in `tests/fm-bootstrap.test.sh` and `tests/fm-calm-pi-extension.test.sh` | each script's own comments | medium; these are portability fixes inside upstream files and are upstream-contribution candidates rather than durable local behavior |
+| Explicit do-not-merge enforcement | `bin/fm-merge-authority-lib.sh` plus narrow call sites in spawn and the two guarded merge entry points | the library header and `tests/fm-merge-authority.test.sh` | medium; upstream may change atomic spawn metadata or guarded merge entry points |
+| Authorized bug-bounty routing | [`hunt`](../../.agents/skills/hunt/SKILL.md) plus one intake trigger in `AGENTS.md` | the skill; BB's home-local live packet and dispatch profiles remain execution authority | low; the skill is new and the inline trigger is one sentence |
 | Local operating choices | gitignored `config/` files and `.env` | [`docs/configuration.md`](../configuration.md) | none; untracked and never rebased |
 | Private fleet records | gitignored `data/`, `state/`, `projects/` | `AGENTS.md` section 2 | none; untracked and never rebased |
 
@@ -136,14 +138,16 @@ Proving that upstream's behavior and the local customizations both still work af
 Run the toolbelt check-and-test block in [`CONTRIBUTING.md`](../../CONTRIBUTING.md), which owns its current form, plus `bin/fm-doc-audience-check.sh` for prose classification and link targets ([`docs/documentation-audiences.md`](../documentation-audiences.md)).
 
 Add the customization's own regression scripts to the same run.
-For the Pi launch-scope area those are:
+The changed-test mapping is:
 
-```sh
-bin/fm-test-run.sh tests/fm-pi-watch-extension.test.sh
-bin/fm-test-run.sh tests/fm-session-start.test.sh
-bin/fm-test-run.sh tests/fm-spawn-dispatch-profile.test.sh
-bin/fm-test-run.sh tests/fm-supervision-instructions.test.sh
-```
+| Changed customization path | Required focused regression |
+| --- | --- |
+| `bin/fm-pi-primary.sh` | `tests/fm-pi-primary.test.sh`, `tests/fm-session-start.test.sh`, `tests/fm-supervision-instructions.test.sh` |
+| Pi launch and environment sections in `bin/fm-spawn.sh` | `tests/fm-spawn-dispatch-profile.test.sh`, `tests/fm-brief.test.sh`, `tests/fm-task-delivery.test.sh`, `tests/fm-trace-context-spawn.test.sh` |
+| Merge-authority sections in `bin/fm-spawn.sh`, `bin/fm-pr-merge.sh`, or `bin/fm-merge-local.sh` | `tests/fm-merge-authority.test.sh`, `tests/fm-pr-merge.test.sh`, `tests/fm-pr-check-security.test.sh` |
+| Pi supervision integration | `tests/fm-pi-watch-extension.test.sh`, `tests/fm-session-start.test.sh`, `tests/fm-supervision-instructions.test.sh`, `tests/fm-pi-primary-types.test.sh` |
+| `.agents/skills/hunt/SKILL.md` or its `AGENTS.md` trigger | `bin/fm-doc-audience-check.sh`, `tests/fm-documentation-audiences.test.sh` |
+| `bin/fm-test-run.sh` routing for any row above | `tests/fm-test-run.test.sh`, `bin/fm-test-run.sh --check-coverage` |
 
 Selection rules, lanes, and the deliberate full-regression flag are owned by `bin/fm-test-run.sh --help`; the broad regression matrix is owned by [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml).
 

@@ -218,6 +218,8 @@ Claude's Stop `asyncRewake` hook owns tokenless re-arm cycles, Grok uses backgro
 When pi-signed is selected, Firstmate launches the executable named `pi-signed` from `PATH` with `FM_PI_HARNESS=pi-signed` and refuses the launch if it is unavailable rather than falling back to pi.
 Plain Pi launches set `FM_PI_HARNESS=pi`, so a signed primary's environment cannot relabel a plain Pi worker.
 `bin/fm-pi-primary.sh` launches a Pi primary with extension discovery disabled and restores only the required turn-end guard and watcher extensions.
+It defaults Chrome automation to `${HOME}/.chrome-llm-profile`, headed mode, and automatic attachment off, while preserving explicit `CHROME_DEVTOOLS_AXI_*` caller overrides; `fm-spawn.sh` sends the same resolved values through its existing pane environment channel for workers.
+The launcher also loads `FM_CAPTAIN_DECISIONS_EXT`, or `${HOME}/.pi/agent/extensions/fm-captain-decisions/index.ts` by default, only when that resolved file exists.
 Pi ship and scout workers use the same isolation boundary and additionally load the resolved `pi-dynamic-workflows` extension, while Pi secondmates do not load workflow fan-out.
 A home-local `config/pi-crew-thin` containing `1` or `on` adds `--no-skills` plus the explicitly resolved background-terminals and pi-render-cache extensions to normal Pi ship and scout workers only.
 The thin opt-in is not inherited and never applies to a Pi secondmate coordinator.
