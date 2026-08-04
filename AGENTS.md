@@ -306,7 +306,7 @@ Never merge a red PR.
 Without a current explicit captain instruction that states the concrete merge, that default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
 Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
 When the captain restricts a lane to a reviewable PR only, spawn it with `bin/fm-spawn.sh --no-merge` so both merge paths refuse it; a do-not-merge line in the brief instructs the worker but does not bind the merge actions.
-A recorded block survives every later respawn of that task id and is lifted only by an explicit `--captain-authorized` invocation.
+A recorded block survives every later respawn of that task id, and no merge or spawn command can mint an exception to it.
 When recovery continues the lane under a new task id, spawn the successor with `bin/fm-spawn.sh --carry-merge-from <predecessor-task-id>` so the durable constraint moves with the lane.
 After an autonomous merge, give the captain a one-line full-URL or local-main outcome.
 

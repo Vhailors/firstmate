@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--no-merge|--captain-authorized] [--carry-merge-from <predecessor-task-id>]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--no-merge|--captain-authorized] [--carry-merge-from <predecessor-task-id>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--no-merge] [--carry-merge-from <predecessor-task-id>]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--no-merge] [--carry-merge-from <predecessor-task-id>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --no-merge records merge=blocked in the task metadata, so both merge paths
-#   refuse to land the task until an explicit --captain-authorized invocation
-#   records merge=allowed.
+#   refuse to land the task. No merge or spawn command can mint an exception.
 #   A later respawn of the same task carries its recorded authority automatically.
 #   --carry-merge-from names one predecessor task when recovery continues a lane
 #   under a new task id; unreadable authority refuses the successor launch.
@@ -233,7 +232,6 @@ fm_refuse_if_gate_agent
 [ -n "${FM_SPAWN_NO_GUARD:-}" ] || "$FM_ROOT/bin/fm-guard.sh" || true
 KIND=ship
 MERGE_AUTHORITY=
-MERGE_LIFT=0
 MERGE_CARRY_FROM=
 MERGE_CARRY_SET=0
 HARNESS_ARG=
@@ -275,7 +273,10 @@ for a in "$@"; do
     --scout) KIND=scout ;;
     --secondmate) KIND=secondmate ;;
     --no-merge) MERGE_AUTHORITY=blocked ;;
-    --captain-authorized) MERGE_LIFT=1 ;;
+    --captain-authorized)
+      echo "error: --captain-authorized is not supported; a spawn command cannot lift merge=blocked" >&2
+      exit 2
+      ;;
     --carry-merge-from) want_value=carry-merge-from ;;
     --carry-merge-from=*) MERGE_CARRY_FROM=${a#--carry-merge-from=}; MERGE_CARRY_SET=1 ;;
     --harness) want_value=harness ;;
@@ -296,15 +297,11 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
-[ "$MERGE_LIFT" -eq 0 ] || [ -z "$MERGE_AUTHORITY" ] \
-  || { echo "error: --no-merge and --captain-authorized contradict each other; pass exactly one" >&2; exit 1; }
-[ "$MERGE_LIFT" -eq 0 ] || [ -z "$MERGE_CARRY_FROM" ] \
-  || { echo "error: --carry-merge-from and --captain-authorized contradict each other; carry the predecessor's constraint or lift it, not both" >&2; exit 1; }
 if [ "$MERGE_CARRY_SET" -eq 1 ]; then
   fm_pr_task_id_valid "$MERGE_CARRY_FROM" \
     || { echo "error: --carry-merge-from needs a valid predecessor task id" >&2; exit 1; }
 fi
-if [ "$KIND" = secondmate ] && { [ -n "$MERGE_AUTHORITY" ] || [ "$MERGE_LIFT" -eq 1 ] || [ -n "$MERGE_CARRY_FROM" ]; }; then
+if [ "$KIND" = secondmate ] && { [ -n "$MERGE_AUTHORITY" ] || [ -n "$MERGE_CARRY_FROM" ]; }; then
   echo "error: merge-authority flags apply only to ship and scout task lanes, not secondmate spawns" >&2
   exit 1
 fi
@@ -769,9 +766,9 @@ trap spawn_abort_cleanup EXIT
 # <session> is required so secondmate and primary spawns serialize against the
 # same session without writing any other home's state directory.
 spawn_herdr_presentation_order_lock_acquire() {
-  local session=${1:-} attempt lock_path max_attempts=${FM_HERDR_PRESENTATION_LOCK_ATTEMPTS:-200}
+  local session=${1:-} attempt lock_path max_attempts=${FM_HERDR_PRESENTATION_LOCK_ATTEMPTS:-50}
   [ -n "$session" ] || session=$(fm_backend_herdr_session)
-  case "$max_attempts" in ''|*[!0-9]*|0) max_attempts=200 ;; esac
+  case "$max_attempts" in ''|*[!0-9]*|0) max_attempts=50 ;; esac
   lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") || return 1
   HERDR_PRESENTATION_ORDER_LOCK="$lock_path"
   attempt=0
@@ -821,7 +818,6 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ "$MODE_SET" -eq 0 ] || shared_args+=(--mode "$MODE")
   [ "$YOLO_SET" -eq 0 ] || shared_args+=(--yolo "$YOLO")
   [ -z "$MERGE_AUTHORITY" ] || shared_args+=(--no-merge)
-  [ "$MERGE_LIFT" -eq 0 ] || shared_args+=(--captain-authorized)
   for pair in "${POS[@]}"; do
     case "$pair" in
       *=*) : ;;
@@ -862,17 +858,11 @@ if [ -n "$MERGE_CARRY_FROM" ]; then
   fi
 fi
 MERGE_REQUESTED=$MERGE_AUTHORITY
-if ! MERGE_AUTHORITY=$(fm_merge_authority_resolve "$STATE/$ID.meta" "$MERGE_REQUESTED" "$MERGE_LIFT"); then
+if ! MERGE_AUTHORITY=$(fm_merge_authority_resolve "$STATE/$ID.meta" "$MERGE_REQUESTED"); then
   echo "error: existing metadata for $ID records a merge authority that cannot be read; refusing to respawn rather than rewriting it as permission" >&2
   exit 1
 fi
-if [ "$MERGE_LIFT" -eq 1 ]; then
-  if [ "$MERGE_AUTHORITY" = allowed ]; then
-    echo "note: merge block on task $ID lifted by explicit captain authorization" >&2
-  else
-    echo "note: task $ID records no merge block for --captain-authorized to lift" >&2
-  fi
-elif [ -n "$MERGE_AUTHORITY" ] && [ "$MERGE_AUTHORITY" != "$MERGE_REQUESTED" ]; then
+if [ -n "$MERGE_AUTHORITY" ] && [ "$MERGE_AUTHORITY" != "$MERGE_REQUESTED" ]; then
   echo "note: task $ID already records merge=$MERGE_AUTHORITY; carrying that constraint onto this launch (bin/fm-merge-authority-lib.sh)" >&2
 fi
 PROJ=
