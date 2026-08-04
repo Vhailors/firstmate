@@ -106,7 +106,7 @@ fm_remote_job_append_glob_dirs() { # <glob whose matches are directories>
   local pattern=$1 directory
   while IFS= read -r directory; do
     fm_remote_job_path_append_if_dir "$directory"
-  done < <(compgen -G "$pattern" || true)
+  done < <(compgen -G "$pattern" | LC_ALL=C sort || true)
 }
 
 fm_remote_job_nvm_default_selector() { # <account-home>

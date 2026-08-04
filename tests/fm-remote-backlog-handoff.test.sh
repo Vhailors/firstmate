@@ -23,7 +23,11 @@ cp "$ROOT/bin/fm-remote-entrypoint.sh" "$ROOT/bin/fm-remote-job-lib.sh" \
   "$ROOT/bin/fm-remote-job-worker.sh" "$ROOT/bin/fm-remote-file.sh" \
   "$ROOT/bin/fm-backlog-receive.sh" "$ROOT/bin/fm-tasks-axi-lib.sh" \
   "$ROOT/bin/fm-wake-lib.sh" "$REMOTE_ROOT/bin/"
-ln -s "$(command -v tasks-axi)" "$REMOTE_ROOT/bin/tasks-axi"
+cat > "$REMOTE_ROOT/bin/tasks-axi" <<EOF
+#!/usr/bin/env bash
+exec "$(command -v tasks-axi)" "\$@"
+EOF
+chmod +x "$REMOTE_ROOT/bin/tasks-axi"
 ln -s "$(command -v node)" "$REMOTE_ROOT/bin/node"
 chmod +x "$REMOTE_ROOT/bin"/*.sh
 git -C "$REMOTE_ROOT" init -q -b main

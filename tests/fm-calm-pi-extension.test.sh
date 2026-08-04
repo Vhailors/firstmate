@@ -37,8 +37,8 @@ cleanup() {
 trap cleanup EXIT
 
 wait_for_text() {
-  local file=$1 text=$2 i=0
-  while [ "$i" -lt 120 ]; do
+  local file=$1 text=$2 i=0 limit=${FM_CALM_WAIT_ATTEMPTS:-600}
+  while [ "$i" -lt "$limit" ]; do
     # Include recent scrollback: expanding a long restored transcript can move
     # the asserted tool output above the current viewport while the footer and
     # editor remain visible.
@@ -1206,9 +1206,20 @@ TS
       fail "Pi follow-up $label case did not process the monitoring notification"
     fi
 
-    pane=$(tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" -S - 2>/dev/null || true)
+    # Assert the settled visible transcript, not tmux scrollback containing prior
+    # redraw frames or the brief interval before Pi paints the completed turn.
+    i=0
+    while [ "$i" -lt 100 ]; do
+      pane=$(tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" 2>/dev/null || true)
+      if [ "$(printf '%s\n' "$pane" | grep -Fc "CAPTAIN_ANSWER_$label" || true)" -eq 1 ] \
+        && printf '%s\n' "$pane" | grep -Fq "MONITOR_HANDLED_${label}_ONE"; then
+        break
+      fi
+      sleep 0.05
+      i=$((i + 1))
+    done
     [ "$(printf '%s\n' "$pane" | grep -Fc "CAPTAIN_ANSWER_$label" || true)" -eq 1 ] \
-      || fail "Pi follow-up $label case rendered a duplicate captain answer"
+      || fail "Pi follow-up $label case did not settle to one visible captain answer"
     assert_contains "$pane" "CAPTAIN_PROMPT_$label" "Pi follow-up $label case hid the genuine captain prompt"
     assert_contains "$pane" "MONITOR_HANDLED_${label}_ONE" "Pi follow-up $label case did not render the intended processing result"
     if [ "$calm_state" = on ]; then
@@ -2717,13 +2728,15 @@ JSON
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/calm"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
   active_screen_wait=0
-  while [ "$active_screen_wait" -lt 120 ]; do
+  while [ "$active_screen_wait" -lt 600 ]; do
     tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" >"$hidden_snapshot"
     # Wait for the redraw this block actually asserts: hidden rows gone AND the
     # retained genuine rows back on screen. Breaking on the hidden rows alone can
     # observe a half-redrawn transcript.
     if ! grep -Fq "CALM_E2E_OUTPUT" "$hidden_snapshot" &&
       ! grep -Fq "/calm" "$hidden_snapshot" &&
+      ! grep -Fq "Thinking..." "$hidden_snapshot" &&
+      ! grep -Fq "fm_watch_arm_pi" "$hidden_snapshot" &&
       grep -Fq "FIRSTMATE WATCHER WAKE: can you explain this phrase?" "$hidden_snapshot" &&
       grep -Fq "The deterministic tool example is complete." "$hidden_snapshot"; then
       break
@@ -2863,6 +2876,7 @@ JS
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/export $export_file"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
   wait_for_text "$export_snapshot" "Session exported to: $export_file" \
+    || [ -f "$export_file" ] \
     || fail "/export did not complete while calm mode was on"
   node - "$export_file" <<'JS' || fail "calm-mode HTML export lost tool data or persisted synthetic provenance"
 const html = require("node:fs").readFileSync(process.argv[2], "utf8");

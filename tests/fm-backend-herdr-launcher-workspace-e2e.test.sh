@@ -106,9 +106,9 @@ label_of_workspace() {  # <workspace_id>
     | jq -r --arg id "$1" '.result.workspaces[]? | select(.workspace_id == $id) | .label' 2>/dev/null
 }
 
-tab_labels_of_workspace() {  # <workspace_id>
+tab_ids_of_workspace() {  # <workspace_id>
   lab tab list --workspace "$1" 2>/dev/null \
-    | jq -r '[.result.tabs[]?.label] | sort | join(",")' 2>/dev/null
+    | jq -r '[.result.tabs[]?.tab_id] | sort | join(",")' 2>/dev/null
 }
 
 journal_field() {  # <presentation-journal> <key>
@@ -267,7 +267,7 @@ EOF
 [ "$WS_PRIMARY_DUP" != "$WS_PRIMARY" ] || fail "the two 'firstmate' workspaces must be distinct"
 DUP_COUNT=$(lab workspace list 2>/dev/null | jq -r '[.result.workspaces[]? | select(.label == "firstmate")] | length')
 [ "$DUP_COUNT" = 2 ] || fail "expected exactly two 'firstmate' workspaces, got $DUP_COUNT"
-WS_PRIMARY_TABS_BEFORE=$(tab_labels_of_workspace "$WS_PRIMARY")
+WS_PRIMARY_TAB_IDS_BEFORE=$(tab_ids_of_workspace "$WS_PRIMARY")
 
 cat > "$TMP_ROOT/spawn-in-pane.sh" <<SPAWN
 #!/usr/bin/env bash
@@ -298,7 +298,7 @@ DUPC_WS=$(workspace_of_pane "$DUPC_PANE")
   || fail "the recorded endpoint workspace does not match the launcher's workspace"
 pass "real herdr E2E: with two 'firstmate' workspaces, a worker spawned from inside the second one lands in that exact workspace"
 
-[ "$(tab_labels_of_workspace "$WS_PRIMARY")" = "$WS_PRIMARY_TABS_BEFORE" ] \
+[ "$(tab_ids_of_workspace "$WS_PRIMARY")" = "$WS_PRIMARY_TAB_IDS_BEFORE" ] \
   || fail "the other same-labeled workspace's tabs changed; it must never be adopted or mutated"
 [ "$(label_of_workspace "$WS_PRIMARY")" = firstmate ] \
   || fail "the other same-labeled workspace was renamed"
@@ -328,7 +328,7 @@ PRESD_ORDER=$(lab workspace list 2>/dev/null | jq -r --arg dup "$WS_PRIMARY_DUP"
   | ((map(select(.id == $child)) | .[0].i) - (map(select(.id == $dup)) | .[0].i))')
 [ "$PRESD_ORDER" = 1 ] \
   || fail "the projected child should sit immediately after the launcher's own workspace, offset was '$PRESD_ORDER'"
-[ "$(tab_labels_of_workspace "$WS_PRIMARY")" = "$WS_PRIMARY_TABS_BEFORE" ] \
+[ "$(tab_ids_of_workspace "$WS_PRIMARY")" = "$WS_PRIMARY_TAB_IDS_BEFORE" ] \
   || fail "the other same-labeled workspace was mutated by a projected spawn"
 [ "$(focused_workspace)" = "$WS_OTHER" ] || fail "a projected spawn stole focus from the captain's workspace"
 pass "real herdr E2E: with a duplicated home label, a projected worker still hangs off the launcher's exact workspace and the sibling stays untouched"
@@ -377,7 +377,7 @@ read -r WS_SM_LAUNCH _ LAUNCH_SM_PANE <<EOF
 $(make_workspace "2ndmate-$SM_ID")
 EOF
 [ -n "$WS_SM_DECOY" ] && [ -n "$WS_SM_LAUNCH" ] || fail "could not create the two secondmate-labeled workspaces"
-WS_SM_DECOY_TABS_BEFORE=$(tab_labels_of_workspace "$WS_SM_DECOY")
+WS_SM_DECOY_TAB_IDS_BEFORE=$(tab_ids_of_workspace "$WS_SM_DECOY")
 
 spawn_from_launcher "$LAUNCH_SM_PANE" "$SM_HOME" smE "$PROJ" --mode no-mistakes --yolo off
 [ "$SPAWN_RC" -eq 0 ] || fail "a secondmate-owned crewmate spawn failed"$'\n'"$(cat "$SPAWN_ERR")"
@@ -387,7 +387,7 @@ SME_PANE=$(grep '^herdr_pane_id=' "$SME_META" | cut -d= -f2-)
 SME_WS=$(workspace_of_pane "$SME_PANE")
 [ "$SME_WS" = "$WS_SM_LAUNCH" ] \
   || fail "a secondmate's own worker must land in the secondmate's exact workspace ($WS_SM_LAUNCH), got '$SME_WS'"
-[ "$(tab_labels_of_workspace "$WS_SM_DECOY")" = "$WS_SM_DECOY_TABS_BEFORE" ] \
+[ "$(tab_ids_of_workspace "$WS_SM_DECOY")" = "$WS_SM_DECOY_TAB_IDS_BEFORE" ] \
   || fail "the duplicate secondmate-labeled workspace was mutated"
 pass "real herdr E2E: a secondmate launching its own worker gets the same exact-workspace guarantee, and its same-labeled sibling is untouched"
 
