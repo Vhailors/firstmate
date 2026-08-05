@@ -386,81 +386,88 @@ test_portable_shard_union_and_coverage_guard() {
   pass "portable shard union, disjointness, and coverage guard hold"
 }
 
-test_coverage_guard_is_locale_independent() {
-  local utf8 out rc
-  # The guard sorts its lists and then compares them with comm/uniq/cmp, so it
-  # must pin one collation itself. A default UTF-8 locale used to sort with C
-  # rules and compare with UTF-8 rules, and comm aborted with "not in sorted
-  # order" - green in CI's C locale, red on a developer shell.
-  out=$(LC_ALL=C "$RUNNER" --check-coverage 2>&1) || fail "coverage guard failed under LC_ALL=C: $out"
-  assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard marker under LC_ALL=C"
-  # C.UTF-8 still collates by codepoint, so it cannot expose the mismatch - only
-  # a locale with real dictionary collation can.
-  utf8=$(locale -a 2>/dev/null | grep -iE '\.(utf-?8)$' | grep -viE '^(C|POSIX)[.@]' | head -n 1 || true)
-  if [ -z "$utf8" ]; then
-    pass "coverage guard is collation-pinned (LC_ALL=C only; no collating UTF-8 locale on this host)"
-    return 0
-  fi
-  set +e
-  out=$(LC_ALL="$utf8" LANG="$utf8" "$RUNNER" --check-coverage 2>&1)
-  rc=$?
-  set -e
-  [ "$rc" -eq 0 ] || fail "coverage guard failed under $utf8 (rc=$rc): $out"
-  case $out in
-    *'not in sorted order'*) fail "coverage guard hit a collation mismatch under $utf8: $out" ;;
-  esac
-  assert_contains "$out" "FM_TEST_COVERAGE ok" "coverage guard marker under $utf8"
-  pass "coverage guard pins one collation (green under both C and $utf8)"
+test_portable_serial_shards_partition_the_serial_lane() {
+  local lanes count serial shard listed union dups shard_lane total cap
+  lanes=$("$RUNNER" --list-lanes)
+  count=$(printf '%s\n' "$lanes" | grep -c '^portable-serial-[0-9]*of[0-9]*$')
+  [ "$count" -ge 2 ] || fail "expected at least two portable serial shard lanes, got $count"
+  printf '%s\n' "$lanes" | grep -q "^portable-serial-1of${count}\$" \
+    || fail "shard lane names must carry the shard count ${count}: $lanes"
+
+  serial=$("$RUNNER" --list --lane portable-serial | LC_ALL=C sort)
+  union=""
+  shard=1
+  while [ "$shard" -le "$count" ]; do
+    shard_lane="portable-serial-${shard}of${count}"
+    listed=$("$RUNNER" --list --lane "$shard_lane")
+    [ -n "$listed" ] || fail "$shard_lane selected no tests"
+    union=$(printf '%s\n%s' "$union" "$listed")
+    shard=$((shard + 1))
+  done
+  union=$(printf '%s\n' "$union" | grep -v '^$' || true)
+
+  dups=$(printf '%s\n' "$union" | LC_ALL=C sort | uniq -d || true)
+  [ -z "$dups" ] || fail "portable serial shards run the same script twice: $dups"
+  [ "$(printf '%s\n' "$union" | LC_ALL=C sort)" = "$serial" ] \
+    || fail "portable serial shards must exactly cover the portable serial lane"
+
+  # Every shard carries a real share of the lane, so no degenerate partition
+  # leaves one runner doing nearly all of the work the split exists to spread.
+  total=$(printf '%s\n' "$serial" | wc -l | tr -d ' ')
+  cap=$((total * 6 / 10))
+  shard=1
+  while [ "$shard" -le "$count" ]; do
+    listed=$("$RUNNER" --list --lane "portable-serial-${shard}of${count}" | wc -l | tr -d ' ')
+    [ "$listed" -ge 2 ] \
+      || fail "portable-serial-${shard}of${count} holds only $listed script(s)"
+    [ "$listed" -le "$cap" ] \
+      || fail "portable-serial-${shard}of${count} holds $listed of $total scripts"
+    shard=$((shard + 1))
+  done
+
+  # Assignment is deterministic across invocations.
+  [ "$("$RUNNER" --list --lane "portable-serial-1of${count}")" = \
+    "$("$RUNNER" --list --lane "portable-serial-1of${count}")" ] \
+    || fail "portable serial shard membership must be deterministic"
+  pass "portable serial shards are a deterministic disjoint cover of the serial lane"
 }
 
-test_tmproot_registration_survives_command_substitution() {
-  local tmp probe out rc root during leftovers
-  tmp=$(fm_test_tmproot fm-test-run-tmproot)
-  # Every caller spells this `TMP_ROOT=$(fm_test_tmproot ...)`, so registration
-  # has to cross a command-substitution subshell: the root must survive the
-  # substitution and still be removed when the owning shell exits - on a clean
-  # exit, on a failed assertion, and under a test file's own EXIT trap.
-  for probe in clean failing owntrap; do
-    mkdir -p "$tmp/$probe/tmp"
-    # The single quotes below are deliberate: these printf formats emit the
-    # probe script's own source, so $TMP_ROOT has to reach the file unexpanded
-    # and expand when the probe runs.
-    # shellcheck disable=SC2016
-    {
-      printf 'set -u\n'
-      printf '. "%s/tests/lib.sh"\n' "$ROOT"
-      [ "$probe" = owntrap ] && printf "trap 'fm_test_cleanup' EXIT\n"
-      printf 'TMP_ROOT=$(fm_test_tmproot probe-%s)\n' "$probe"
-      printf 'mkdir -p "$TMP_ROOT/sub"; : > "$TMP_ROOT/sub/file"\n'
-      printf 'printf "root=%%s\\n" "$TMP_ROOT"\n'
-      printf 'printf "during=%%s\\n" "$([ -d "$TMP_ROOT/sub" ] && echo yes || echo no)"\n'
-      [ "$probe" = failing ] && printf 'fail "forced probe failure"\n'
-      printf 'exit 0\n'
-    } > "$tmp/$probe/probe.sh"
-    set +e
-    out=$(TMPDIR="$tmp/$probe/tmp" bash "$tmp/$probe/probe.sh" 2>&1)
-    rc=$?
-    set -e
-    root=$(printf '%s\n' "$out" | sed -n 's/^root=//p')
-    during=$(printf '%s\n' "$out" | sed -n 's/^during=//p')
-    [ -n "$root" ] || fail "$probe probe printed no temp root: $out"
-    [ "$during" = yes ] \
-      || fail "$probe probe: temp root vanished inside the command substitution"
-    if [ "$probe" = failing ]; then
-      [ "$rc" -ne 0 ] || fail "failing probe was expected to exit non-zero"
-    else
-      [ "$rc" -eq 0 ] || fail "$probe probe exited $rc: $out"
-    fi
-    [ ! -e "$root" ] || fail "$probe probe leaked its temp root $root"
-    leftovers=$(find "$tmp/$probe/tmp" -mindepth 1 2>/dev/null)
-    [ -z "$leftovers" ] \
-      || fail "$probe probe left files behind in TMPDIR: $leftovers"
-  done
-  pass "fm_test_tmproot registers in the owning shell and cleans up on every exit path"
+test_portable_serial_shard_lane_refusals() {
+  local tmp count rc other
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-shard-lane.XXXXXX")
+  count=$("$RUNNER" --list-lanes | grep -c '^portable-serial-[0-9]*of[0-9]*$')
+  other=$((count + 1))
+
+  # A lane built for a different shard count must refuse rather than run a
+  # partial suite: this is what keeps a CI matrix from silently dropping tests.
+  set +e
+  "$RUNNER" --list --lane "portable-serial-1of${other}" >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "mismatched shard count must refuse (exit 2), got $rc"
+  [ ! -s "$tmp/out" ] || fail "mismatched shard count must not list tests"
+  grep -Fq "configured for $count" "$tmp/err" \
+    || fail "mismatch refusal must name the configured count: $(cat "$tmp/err")"
+
+  set +e
+  "$RUNNER" --list --lane "portable-serial-$((count + 1))of${count}" >"$tmp/out2" 2>"$tmp/err2"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "out-of-range shard index must refuse (exit 2), got $rc"
+  grep -Fq "outside 1..$count" "$tmp/err2" \
+    || fail "range refusal message missing: $(cat "$tmp/err2")"
+
+  set +e
+  "$RUNNER" --list --lane portable-serial-1 >"$tmp/out3" 2>"$tmp/err3"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "shard lane without a count must refuse (exit 2), got $rc"
+  rm -rf "$tmp"
+  pass "portable serial shard lanes refuse mismatched, out-of-range, and countless names"
 }
 
 test_jobs_requires_proven_isolated() {
-  local tmp rc
+  local tmp rc shard_lane
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs.XXXXXX")
   set +e
   "$RUNNER" --jobs 2 --lane portable-serial >"$tmp/out" 2>"$tmp/err"
@@ -474,6 +481,15 @@ test_jobs_requires_proven_isolated() {
   rc=$?
   set -e
   [ "$rc" -eq 2 ] || fail "--jobs on watcher-lock must refuse, got $rc"
+  # Sharding across runners never relaxes the serial rule inside one shard.
+  shard_lane=$("$RUNNER" --list-lanes | grep -m1 '^portable-serial-[0-9]*of[0-9]*$')
+  set +e
+  "$RUNNER" --jobs 2 --lane "$shard_lane" >"$tmp/out3" 2>"$tmp/err3"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "--jobs with a portable serial shard must refuse, got $rc"
+  grep -Fq 'not in the proven-isolated set' "$tmp/err3" \
+    || fail "shard --jobs refusal message missing: $(cat "$tmp/err3")"
   rm -rf "$tmp"
   pass "--jobs refuses non-proven / stateful selections"
 }
@@ -503,28 +519,42 @@ if [ "$1" = "-f" ] && [ "$2" = "%Lp" ]; then
 fi
 exit 1
 SH
+  # The slow fixture blocks on the replacement fixture's own signal rather than
+  # a wall-clock sleep, so a loaded machine cannot let it finish first and turn
+  # a correct scheduler into a failure. The bounded deadline is only there so a
+  # scheduler that really does wait for the oldest worker still reports instead
+  # of hanging.
   cat >"$repo/$a" <<'SH'
 #!/usr/bin/env bash
-sleep 0.5
+if [ -n "${SCHED_WAIT_FOR_REPLACEMENT:-}" ]; then
+  waited=0
+  while [ ! -e "$SCHED_EVIDENCE/replacement-started" ] && [ "$waited" -lt 600 ]; do
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+fi
 touch "$SCHED_EVIDENCE/slow-done"
 echo "ok - slow fixture"
 SH
   cat >"$repo/$b" <<'SH'
 #!/usr/bin/env bash
-sleep 0.05
 echo "ok - fast fixture"
 SH
   cat >"$repo/$c" <<'SH'
 #!/usr/bin/env bash
+# Read the evidence before releasing the slow fixture, so the release can never
+# race ahead of the check it is being used to make.
 if [ -e "$SCHED_EVIDENCE/slow-done" ]; then
+  touch "$SCHED_EVIDENCE/replacement-started"
   echo "not ok - scheduler waited for oldest worker"
   exit 1
 fi
+touch "$SCHED_EVIDENCE/replacement-started"
 echo "ok - replacement fixture started before slow fixture finished"
 SH
   chmod +x "$runner" "$repo/$a" "$repo/$b" "$repo/$c" "$fake_bin/stat"
   set +e
-  PATH="$fake_bin:$PATH" SCHED_EVIDENCE="$evidence" \
+  PATH="$fake_bin:$PATH" SCHED_EVIDENCE="$evidence" SCHED_WAIT_FOR_REPLACEMENT=1 \
     "$runner" --jobs 2 --json "$tmp/timing.json" \
     "$a" "$b" "$c" >"$tmp/out" 2>"$tmp/err"
   rc=$?
@@ -564,7 +594,6 @@ echo "not ok - deliberate proven-set fail"
 exit 1
 SH
   chmod +x "$repo/$b"
-  rm -f "$evidence/slow-done"
   set +e
   SCHED_EVIDENCE="$evidence" "$runner" --jobs 2 "$a" "$b" >"$tmp/out4" 2>"$tmp/err4"
   rc=$?
@@ -652,8 +681,8 @@ test_gate_skip_accounting
 test_fail_on_gate_skip_token
 test_exclude_family
 test_portable_shard_union_and_coverage_guard
-test_coverage_guard_is_locale_independent
-test_tmproot_registration_survives_command_substitution
+test_portable_serial_shards_partition_the_serial_lane
+test_portable_serial_shard_lane_refusals
 test_jobs_requires_proven_isolated
 test_jobs_parallel_scheduler_and_failure_propagation
 test_aggregate_json

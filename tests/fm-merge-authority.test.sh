@@ -9,7 +9,7 @@
 # prove the constraint cannot be bypassed by the three things that legitimately
 # happen around a finished lane and that all used to look like permission -
 # observing the pull request, polling its state, and validation completing green
-# - while a captain-authorized merge still works.
+# - while no caller can mint authority with a command-line flag.
 #
 # Matrix:
 #   (a) --no-merge records merge=blocked in the task's meta
@@ -19,18 +19,17 @@
 #   (e) observing an already-merged pull request does not lift the block
 #   (f) the merge poll only observes: it never invokes any merge command
 #   (g) fm-pr-check preserves merge=blocked while arming the poll
-#   (h) --captain-authorized lifts the block and merges
+#   (h) --captain-authorized is rejected and cannot lift the block
 #   (i) an unrecognized merge= value refuses rather than defaulting to allowed
 #   (j) a task with no merge= field still merges normally
 #   (k) fm-merge-local refuses a merge=blocked local-only task before touching git
 #   (l) an unreadable task meta refuses instead of reading as "no constraint"
 #   (m) a metadata read error refuses instead of reading as "no constraint"
 #   (n) a valueless merge= field refuses instead of reading as an absent field
-#   (o) a metadata rewrite carries a recorded constraint forward, and only an
-#       explicit lift on that invocation clears it
-#   (p) a recovery respawn that omits --no-merge keeps the block, an explicit
-#       fm-spawn --captain-authorized lifts it, and an unreadable existing
-#       record refuses the respawn outright
+#   (o) a metadata rewrite carries a recorded constraint forward without a
+#       caller-controlled lift channel
+#   (p) a recovery respawn that omits --no-merge keeps the block, rejects the
+#       removed --captain-authorized escape hatch, and refuses unreadable state
 #   (q) a recovery that continues the lane under a SUCCESSOR task id carries the
 #       predecessor's block through --carry-merge-from, refuses when that record
 #       cannot be read, and never doubles as a lift
@@ -276,9 +275,9 @@ test_pr_check_preserves_merge_block() {
   pass "arming the merge poll preserves merge=blocked and the task stays unmergeable"
 }
 
-# --- (h) the legitimate captain-authorized merge still works ----------------
+# --- (h) no merge invocation can mint captain authority ----------------------
 
-test_captain_authorized_merge_lands() {
+test_command_line_cannot_lift_block() {
   local case_dir rc
   case_dir=$(make_case captain-authorized "merge=blocked")
 
@@ -288,14 +287,13 @@ test_captain_authorized_merge_lands() {
   rc=$?
   set -e
 
-  expect_code 0 "$rc" "captain-authorized: an authorized merge should succeed"
-  assert_grep 'lifted by explicit captain authorization' "$case_dir/stderr" \
-    "captain-authorized: the lifted block was not reported"
-  grep -qxF 'pr merge 167 --repo example/repo --squash' "$case_dir/gh-axi.log" \
-    || fail "captain-authorized: gh-axi pr merge was not invoked with number, --repo, and default --squash"
-  assert_grep 'pr=https://github.com/example/repo/pull/167' "$case_dir/state/task-nm.meta" \
-    "captain-authorized: pr= was not recorded"
-  pass "an explicit --captain-authorized merge lifts the block and lands normally"
+  expect_code 2 "$rc" "captain-authorized: the removed escape hatch must be rejected"
+  assert_grep 'a merge command cannot lift merge=blocked' "$case_dir/stderr" \
+    "captain-authorized: refusal did not explain the lane-level boundary"
+  assert_no_merge_attempted "$case_dir" captain-authorized
+  assert_no_grep 'pr=https://github.com/example/repo/pull/167' "$case_dir/state/task-nm.meta" \
+    "captain-authorized: a rejected lift still recorded pr= in task metadata"
+  pass "a merge command cannot mint captain authority with --captain-authorized"
 }
 
 # --- (i)(j) fail closed on garbage, stay open on absence --------------------
@@ -380,7 +378,7 @@ SH
   PATH="$fakebin:$PATH" bash -c '
     set -u
     . "$1"
-    fm_merge_authority_check "$2" task-nm 0
+    fm_merge_authority_check "$2" task-nm
   ' bash "$ROOT/bin/fm-merge-authority-lib.sh" "$case_dir/state/task-nm.meta" \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
@@ -430,16 +428,18 @@ test_merge_local_refuses_blocked_task() {
   [ "$(git -C "$proj" rev-parse main)" = "$before" ] \
     || fail "merge-local-blocked: the default branch advanced despite the refusal"
 
-  # The same task lands once the captain authorizes it.
+  # The same blocked lane cannot be lifted by adding a caller-controlled flag.
   set +e
   FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
     "$MERGE_LOCAL" --captain-authorized task-nm > "$case_dir/stdout2" 2> "$case_dir/stderr2"
   rc=$?
   set -e
-  expect_code 0 "$rc" "merge-local-blocked: an authorized local merge should succeed"
-  [ "$(git -C "$proj" rev-parse main)" != "$before" ] \
-    || fail "merge-local-blocked: the authorized local merge did not advance the default branch"
-  pass "fm-merge-local refuses a blocked task before touching git and lands once authorized"
+  expect_code 2 "$rc" "merge-local-blocked: the removed escape hatch must be rejected"
+  assert_grep 'a merge command cannot lift merge=blocked' "$case_dir/stderr2" \
+    "merge-local-blocked: refusal did not explain the lane-level boundary"
+  [ "$(git -C "$proj" rev-parse main)" = "$before" ] \
+    || fail "merge-local-blocked: the removed escape hatch advanced the default branch"
+  pass "fm-merge-local keeps a blocked lane immutable from command-line flags"
 }
 
 # --- (n) a truncated field is corruption, not absence ------------------------
@@ -470,16 +470,16 @@ run_resolve() {
   bash -c '
     set -u
     . "$1"
-    fm_merge_authority_resolve "$2" "$3" "$4"
-  ' bash "$ROOT/bin/fm-merge-authority-lib.sh" "$1" "$2" "$3"
+    fm_merge_authority_resolve "$2" "$3"
+  ' bash "$ROOT/bin/fm-merge-authority-lib.sh" "$1" "$2"
 }
 
 # Every launch rewrites the whole meta, so the rewrite rule - not the caller's
 # flags - is what makes the constraint durable. Each row:
-#   <label>|<recorded merge line or "-">|<requested>|<lift 0|1>|<expected exit>|<expected value>
+#   <label>|<recorded merge line or "-">|<requested>|<expected exit>|<expected value>
 test_rewrite_carries_constraint_forward() {
-  local label recorded requested lift code expected dir meta out rc
-  while IFS='|' read -r label recorded requested lift code expected; do
+  local label recorded requested code expected dir meta out rc
+  while IFS='|' read -r label recorded requested code expected; do
     [ -n "$label" ] || continue
     dir="$TMP_ROOT/resolve-$label"
     mkdir -p "$dir"
@@ -490,25 +490,24 @@ test_rewrite_carries_constraint_forward() {
       fm_write_meta "$meta" "kind=ship" "$recorded"
     fi
     set +e
-    out=$(run_resolve "$meta" "$requested" "$lift")
+    out=$(run_resolve "$meta" "$requested")
     rc=$?
     set -e
     expect_code "$code" "$rc" "resolve-$label"
     [ "$code" != 0 ] || [ "$out" = "$expected" ] \
       || fail "resolve-$label: expected '$expected', got '$out'"
   done <<'ROWS'
-respawn-without-flag-keeps-block|merge=blocked||0|0|blocked
-respawn-with-flag-keeps-block|merge=blocked|blocked|0|0|blocked
-explicit-lift-clears-block|merge=blocked||1|0|allowed
-unrecognized-value-carried|merge=probably-fine||0|0|probably-fine
-recorded-allowed-needs-no-line|merge=allowed||0|0|
-fresh-spawn-records-nothing|-||0|0|
-fresh-spawn-records-request|-|blocked|0|0|blocked
-valueless-record-refuses|merge=||0|1|
+respawn-without-flag-keeps-block|merge=blocked||0|blocked
+respawn-with-flag-keeps-block|merge=blocked|blocked|0|blocked
+unrecognized-value-carried|merge=probably-fine||0|probably-fine
+recorded-allowed-needs-no-line|merge=allowed||0|
+fresh-spawn-records-nothing|-||0|
+fresh-spawn-records-request|-|blocked|0|blocked
+valueless-record-refuses|merge=||1|
 ROWS
 
-  # A carried value must still be the value the merge actions refuse on, and a
-  # lifted one must be the value they accept.
+  # A carried value remains the value the merge actions refuse on. Historical
+  # allowed records remain backward-compatible, but no command writes one.
   local blocked_dir allowed_dir
   blocked_dir=$(make_case resolve-carried "merge=blocked")
   set +e
@@ -523,8 +522,8 @@ ROWS
     > "$allowed_dir/stdout" 2> "$allowed_dir/stderr"
   rc=$?
   set -e
-  expect_code 0 "$rc" "resolve-lifted: a recorded lift must merge normally"
-  pass "a metadata rewrite carries a recorded constraint forward and only an explicit lift clears it"
+  expect_code 0 "$rc" "resolve-lifted: a historical allowed record must merge normally"
+  pass "a metadata rewrite carries a recorded constraint with no caller-controlled lift"
 }
 
 # --- (p) the respawn path is wired to that rule -----------------------------
@@ -545,10 +544,10 @@ run_spawn_respawn() {
     FM_SPAWN_NO_GUARD=1 \
     FM_BACKEND=tmux \
     FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_TEST_PI_WORKFLOW_EXTENSION:-$PI_WORKFLOW_FIXTURE}" \
-    "$ROOT/bin/fm-spawn.sh" "$@" 2>&1
+    "$ROOT/bin/fm-spawn.sh" "$@" --scout 2>&1
 }
 
-test_respawn_keeps_block_until_explicitly_lifted() {
+test_respawn_keeps_block_and_rejects_removed_lift() {
   local home meta out rc
   home="$TMP_ROOT/respawn-home"
   mkdir -p "$home/state" "$home/data" "$home/projects/alpha"
@@ -573,23 +572,14 @@ test_respawn_keeps_block_until_explicitly_lifted() {
   assert_contains "$out" 'already records merge=blocked; carrying that constraint onto this launch' \
     "respawn: a recovery respawn without --no-merge dropped the recorded merge block"
 
-  # Only the explicit lift clears it.
+  # The removed caller-controlled lift is rejected before launch.
   set +e
   out=$(run_spawn_respawn "$home" task-respawn-r7 projects/alpha pi --captain-authorized)
   rc=$?
   set -e
-  expect_code 1 "$rc" "respawn-lift: the spawn should still stop at the missing brief"
-  assert_contains "$out" 'lifted by explicit captain authorization' \
-    "respawn-lift: --captain-authorized did not lift the recorded block"
-
-  # Contradictory intents are refused rather than silently ordered.
-  set +e
-  out=$(run_spawn_respawn "$home" task-respawn-r7 projects/alpha pi --no-merge --captain-authorized)
-  rc=$?
-  set -e
-  expect_code 1 "$rc" "respawn-both: passing both merge flags must be refused"
-  assert_contains "$out" '--no-merge and --captain-authorized contradict each other' \
-    "respawn-both: contradictory merge flags were accepted"
+  expect_code 2 "$rc" "respawn-lift: the removed escape hatch must be rejected"
+  assert_contains "$out" 'a spawn command cannot lift merge=blocked' \
+    "respawn-lift: the removed escape hatch was not rejected explicitly"
 
   # An existing record that cannot be read refuses the respawn instead of being
   # rewritten as permission.
@@ -603,7 +593,7 @@ test_respawn_keeps_block_until_explicitly_lifted() {
     "respawn-unreadable: an unreadable merge record was rewritten instead of refusing"
   assert_not_contains "$out" 'no brief at' \
     "respawn-unreadable: the refusal came after the spawn had already proceeded"
-  pass "a recovery respawn keeps merge=blocked, only an explicit lift clears it, and an unreadable record refuses"
+  pass "a recovery respawn keeps merge=blocked, rejects caller-controlled lifts, and refuses unreadable state"
 }
 
 # --- (q)(r) the successor-id recovery shape and atomic publication ----------
@@ -658,7 +648,7 @@ run_full_spawn() {
     FM_PROJECTS_OVERRIDE="$FULL_HOME/projects" FM_CONFIG_OVERRIDE="$FULL_HOME/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$FULL_WT" TMUX="fake,1,0" \
     FM_BACKEND=tmux CLAUDE_CONFIG_DIR='' PATH="$FULL_FAKEBIN:$PATH" \
-    "$ROOT/bin/fm-spawn.sh" "$@" 2>&1
+    "$ROOT/bin/fm-spawn.sh" "$@" --mode no-mistakes --yolo off 2>&1
 }
 
 # The refusal both merge actions apply, asked directly of one published meta.
@@ -669,7 +659,7 @@ assert_meta_refuses_merge() {
   bash -c '
     set -u
     . "$1"
-    fm_merge_authority_check "$2" "$3" 0
+    fm_merge_authority_check "$2" "$3"
   ' bash "$ROOT/bin/fm-merge-authority-lib.sh" "$meta" "$id" > /dev/null 2> "$err"
   rc=$?
   set -e
@@ -796,15 +786,15 @@ test_successor_carry_fails_closed_and_never_lifts() {
   assert_contains "$out" 'records a merge authority that cannot be read' \
     "carry-missing: a missing predecessor record did not refuse the successor launch"
 
-  # The carry is not a second lift channel.
+  # The carry cannot be paired with the removed lift channel.
   fm_write_meta "$meta" "kind=ship" "merge=blocked"
   set +e
   out=$(run_spawn_respawn "$home" task-succ-g7 projects/alpha pi --carry-merge-from task-pred-f6 --captain-authorized)
   rc=$?
   set -e
-  expect_code 1 "$rc" "carry-lift: carrying and lifting on one invocation must be refused"
-  assert_contains "$out" '--carry-merge-from and --captain-authorized contradict each other' \
-    "carry-lift: the carry doubled as a lift"
+  expect_code 2 "$rc" "carry-lift: the removed escape hatch must be rejected"
+  assert_contains "$out" 'a spawn command cannot lift merge=blocked' \
+    "carry-lift: the removed escape hatch was not rejected"
 
   # An unsafe or self-referential predecessor id is refused before anything runs.
   set +e
@@ -842,13 +832,13 @@ test_successor_carry_fails_closed_and_never_lifts
 test_launch_meta_is_published_atomically
 test_valueless_authority_refuses
 test_rewrite_carries_constraint_forward
-test_respawn_keeps_block_until_explicitly_lifted
+test_respawn_keeps_block_and_rejects_removed_lift
 test_blocked_task_refuses_before_recording
 test_validation_completion_and_yolo_do_not_lift_block
 test_observed_merged_state_does_not_lift_block
 test_merge_poll_never_merges
 test_pr_check_preserves_merge_block
-test_captain_authorized_merge_lands
+test_command_line_cannot_lift_block
 test_unrecognized_authority_refuses
 test_absent_authority_still_merges
 test_unreadable_meta_refuses

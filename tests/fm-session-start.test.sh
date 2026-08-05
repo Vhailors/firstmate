@@ -59,7 +59,16 @@ new_world() {
 # test deliberately breaks one. Mirrors fm-bootstrap.test.sh's fixture.
 make_fake_toolchain() {
   local fakebin=$1
-  fm_fake_exit0 "$fakebin" tmux node gh-axi chrome-devtools-axi lavish-axi
+  fm_fake_exit0 "$fakebin" tmux node chrome-devtools-axi lavish-axi
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' '0.1.29'
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gh-axi"
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -313,6 +322,9 @@ SH
 
 make_fake_herdr_secondmate_recovery() {
   local fakebin=$1
+  # The recovery kill now requires the shared named-session lock and an exact
+  # focus snapshot. Keep a focused sibling tab so this test's husk close is
+  # provably non-workspace-emptying and never needs to signal a fake shell pid.
   cat > "$fakebin/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -326,16 +338,19 @@ case "${1:-} ${2:-}" in
   "status --json")
     printf '%s\n' '{"client":{"protocol":14,"version":"test"},"server":{"running":true}}'
     ;;
+  "session list")
+    printf '{"sessions":[{"name":"default","running":true,"socket_path":"%s.sock"}]}\n' "$state"
+    ;;
   "workspace list")
-    printf '{"result":{"workspaces":[{"workspace_id":"ws1","label":"2ndmate-%s"}]}}\n' "$mate_id"
+    printf '{"result":{"workspaces":[{"workspace_id":"ws1","label":"2ndmate-%s","focused":true,"active_tab_id":"t-focus"}]}}\n' "$mate_id"
     ;;
   "tab list")
     if [ -e "$spawned" ]; then
-      printf '{"result":{"tabs":[{"tab_id":"t-new","workspace_id":"ws1","label":"fm-%s"}]}}\n' "$mate_id"
+      printf '{"result":{"tabs":[{"tab_id":"t-focus","workspace_id":"ws1","label":"captain","focused":true},{"tab_id":"t-new","workspace_id":"ws1","label":"fm-%s","focused":false}]}}\n' "$mate_id"
     elif [ -e "$killed" ]; then
-      printf '%s\n' '{"result":{"tabs":[]}}'
+      printf '%s\n' '{"result":{"tabs":[{"tab_id":"t-focus","workspace_id":"ws1","label":"captain","focused":true}]}}'
     else
-      printf '{"result":{"tabs":[{"tab_id":"t-old","workspace_id":"ws1","label":"fm-%s"}]}}\n' "$mate_id"
+      printf '{"result":{"tabs":[{"tab_id":"t-focus","workspace_id":"ws1","label":"captain","focused":true},{"tab_id":"t-old","workspace_id":"ws1","label":"fm-%s","focused":false}]}}\n' "$mate_id"
     fi
     ;;
   "tab create")
@@ -354,9 +369,9 @@ case "${1:-} ${2:-}" in
   "pane get")
     pane=${3:-}
     if [ "$pane" = p-new ] && [ -e "$spawned" ]; then
-      printf '%s\n' '{"result":{"pane":{"pane_id":"p-new"}}}'
+      printf '%s\n' '{"result":{"pane":{"pane_id":"p-new","tab_id":"t-new","workspace_id":"ws1"}}}'
     elif [ "$pane" = p-old ] && [ ! -e "$killed" ]; then
-      printf '%s\n' '{"result":{"pane":{"pane_id":"p-old"}}}'
+      printf '%s\n' '{"result":{"pane":{"pane_id":"p-old","tab_id":"t-old","workspace_id":"ws1"}}}'
     else
       printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
       exit 1
@@ -409,21 +424,18 @@ SH
 # (Pi family), GROK_AGENT (grok).
 # codex and opencode have no env markers (ancestry only). Without this, a local
 # claude/pi/grok session fails cases that pin a different fake harness while CI
-# (no ambient markers) still passes. FM_PI_EXTENSION_ISOLATION is scrubbed and
-# reapplied only through FM_TEST_PI_ISOLATION for cases that need the marker.
+# (no ambient markers) still passes.
 run_session_start() {
   local home=$1 root=$2 path=$3 pi_harness=${4:-}
   if [ -n "$pi_harness" ]; then
-    env -u CLAUDECODE -u GROK_AGENT -u FM_PI_EXTENSION_ISOLATION \
-      PI_CODING_AGENT=true FM_PI_HARNESS="$pi_harness" \
+    env -u CLAUDECODE -u GROK_AGENT PI_CODING_AGENT=true FM_PI_HARNESS="$pi_harness" \
+      FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" BASH_ENV="${FM_TEST_BASH_ENV:-}" \
       FM_PI_EXTENSION_ISOLATION="${FM_TEST_PI_ISOLATION:-}" \
-      FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
       "$SESSION_START"
   else
     env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
-      -u FM_PI_EXTENSION_ISOLATION \
+      FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" BASH_ENV="${FM_TEST_BASH_ENV:-}" \
       FM_PI_EXTENSION_ISOLATION="${FM_TEST_PI_ISOLATION:-}" \
-      FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
       "$SESSION_START"
   fi
 }
@@ -683,6 +695,39 @@ EOF
   pass "session start stays read-only when lock ownership cannot be published"
 }
 
+test_trace_context_effective_state_is_frozen_after_lock() {
+  local rec root home fakebin out frozen
+  rec=$(new_world trace-context-session-state)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  : > "$home/config/trace-context"
+
+  FM_TRACE_CONTEXT=off run_session_start "$home" "$root" "$fakebin:$BASE_PATH" >/dev/null
+  [ "$(awk '{print $2}' "$home/state/.trace-context-effective")" = off ] \
+    || fail "session start must freeze an env-off override over a present config flag"
+
+  rm "$home/config/trace-context"
+  FM_TRACE_CONTEXT=on run_session_start "$home" "$root" "$fakebin:$BASE_PATH" >/dev/null
+  [ "$(awk '{print $2}' "$home/state/.trace-context-effective")" = on ] \
+    || fail "a new session start must freeze an env-on override over an absent config flag"
+  frozen=$(cat "$home/state/.trace-context-effective")
+
+  sleep 300 &
+  holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$home/state/.lock"
+  out=$(FM_TRACE_CONTEXT=off run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+  assert_contains "$out" "READ-ONLY SESSION" "trace-context refusal fixture did not enter read-only mode"
+  [ "$(cat "$home/state/.trace-context-effective")" = "$frozen" ] \
+    || fail "a lock-refused session must not mutate the frozen trace-context state"
+
+  pass "locked session start freezes trace context and lock refusal leaves it unchanged"
+}
+
 test_session_lock_concurrent_single_winner() {
   local rec root home fakebin ready completed winners pids i pid count
   rec=$(new_world lock-concurrency)
@@ -728,7 +773,7 @@ SH
   i=1
   while [ "$i" -le 40 ]; do
     (
-      harness_pid=$BASHPID
+      harness_pid=$(sh -c 'printf "%s\n" "$PPID"')
       : > "$home/state/harness-$harness_pid"
       : > "$ready/$i"
       while [ "$(find "$ready" -type f | wc -l | tr -d ' ')" -lt 40 ]; do
@@ -759,21 +804,29 @@ SH
 # --- output ordering ----------------------------------------------------------
 
 test_output_ordering_diagnostics_lead() {
-  local rec root home fakebin out lock_line boot_line wake_line context_line fleet_line next_line
+  local rec root home fakebin bash_env out lock_line boot_line wake_line context_line fleet_line next_line
   rec=$(new_world ordering)
   IFS='|' read -r root home fakebin <<EOF
 $rec
 EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
-  # Force a MISSING diagnostic line so the bootstrap section is non-trivial.
-  # quota-axi is absent from the bounded base PATH on every supported host,
-  # unlike node, which is commonly installed at /usr/bin/node on Linux.
-  rm -f "$fakebin/quota-axi"
+  # Force a MISSING diagnostic line so the bootstrap section is non-trivial,
+  # even when the developer machine has node in the baseline PATH.
+  rm -f "$fakebin/node"
+  bash_env="$home/no-node.bash"
+  cat > "$bash_env" <<'SH'
+command() {
+  if [ "${1:-}" = -v ] && [ "${2:-}" = node ]; then
+    return 1
+  fi
+  builtin command "$@"
+}
+SH
 
   printf 'window=fm-sess:w1\nkind=ship\n' > "$home/state/task-a.meta"
 
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  out=$(FM_TEST_BASH_ENV="$bash_env" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
   lock_line=$(printf '%s\n' "$out" | grep -n '^LOCK$' | head -1 | cut -d: -f1)
   boot_line=$(printf '%s\n' "$out" | grep -n '^BOOTSTRAP$' | head -1 | cut -d: -f1)
@@ -792,7 +845,7 @@ EOF
   [ "$context_line" -lt "$fleet_line" ] || fail "CONTEXT did not precede FLEET STATE"
   [ "$fleet_line" -lt "$next_line" ] || fail "FLEET STATE did not precede NEXT STEP"
 
-  missing_line=$(printf '%s\n' "$out" | grep -n 'MISSING: quota-axi' | head -1 | cut -d: -f1)
+  missing_line=$(printf '%s\n' "$out" | grep -n 'MISSING: node' | head -1 | cut -d: -f1)
   [ -n "$missing_line" ] || fail "MISSING diagnostic did not appear at all"
   [ "$missing_line" -lt "$fleet_line" ] || fail "actionable MISSING diagnostic was buried after the bulk fleet-state digest"
 
@@ -1044,24 +1097,33 @@ EOF
 # --- composition: real scripts run, not reimplemented ------------------------
 
 test_composition_invokes_real_scripts() {
-  local rec root home fakebin out
+  local rec root home fakebin bash_env out
   rec=$(new_world composition)
   IFS='|' read -r root home fakebin <<EOF
 $rec
 EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
-  rm -f "$fakebin/quota-axi"
+  rm -f "$fakebin/node"
+  bash_env="$home/no-node.bash"
+  cat > "$bash_env" <<'SH'
+command() {
+  if [ "${1:-}" = -v ] && [ "${2:-}" = node ]; then
+    return 1
+  fi
+  builtin command "$@"
+}
+SH
 
   printf 'needs-decision: pick a library\n' > "$home/state/task-z.status"
   append_wake "$home/state" signal task-z.status "needs-decision: pick a library"
 
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  out=$(FM_TEST_BASH_ENV="$bash_env" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
   # fm-lock.sh's own exact success text.
   assert_contains "$out" "lock acquired: harness pid" "fm-lock.sh's real output did not appear (composition, not reimplementation)"
   # fm-bootstrap.sh's own exact MISSING-tool line format.
-  assert_contains "$out" "MISSING: quota-axi (install:" "fm-bootstrap.sh's real detect line did not appear verbatim"
+  assert_contains "$out" "MISSING: node (install:" "fm-bootstrap.sh's real detect line did not appear verbatim"
   # fm-wake-drain.sh's real drained record (raw tab-separated queue line).
   assert_contains "$out" "$(printf 'signal\ttask-z.status\tneeds-decision: pick a library')" "fm-wake-drain.sh's real drained record did not appear"
   assert_contains "$out" "wake annotation: latest wake-EVENT observed at drain, not current state: task-z.status: needs-decision: pick a library" "fm-session-start.sh did not preserve the drain's separate annotation line"
@@ -1254,8 +1316,7 @@ EOF
   assert_contains "$out" "SUPERVISION OPERATING INSTRUCTIONS - primary harness: pi" "pi supervision block missing"
   assert_contains "$out" "Mode: Pi extension background wake." "pi snippet missing from session start"
   assert_contains "$out" "PI_WATCH_EXTENSION: not loaded" "pi extension load diagnostic missing"
-  assert_contains "$out" "restart through $root/bin/fm-pi-primary.sh" "pi extension load diagnostic omits the scoped primary launcher"
-  assert_contains "$out" "$root/.pi/extensions/fm-primary-turnend-guard.ts and $root/.pi/extensions/fm-primary-pi-watch.ts load explicitly" "pi extension load diagnostic omits the required extensions"
+  assert_contains "$out" "restart through $root/bin/fm-pi-primary.sh so extension discovery stays disabled" "pi extension load diagnostic omits the scoped primary launcher"
 
   wake_line=$(printf '%s\n' "$out" | grep -n '^WAKE QUEUE$' | head -1 | cut -d: -f1)
   sup_line=$(printf '%s\n' "$out" | grep -n '^SUPERVISION OPERATING INSTRUCTIONS' | head -1 | cut -d: -f1)
@@ -1283,37 +1344,10 @@ EOF
     "pi-signed primary did not reuse Pi's supervision protocol"
   assert_contains "$out" "PI_WATCH_EXTENSION: not loaded" \
     "pi-signed primary skipped Pi extension validation"
-  assert_contains "$out" "restart through FM_PI_HARNESS=pi-signed $root/bin/fm-pi-primary.sh" \
-    "pi-signed extension diagnostic did not preserve the executable identity"
+  assert_contains "$out" "restart through $root/bin/fm-pi-primary.sh so extension discovery stays disabled" \
+    "pi-signed extension diagnostic did not use the scoped primary launcher"
 
   pass "session start preserves pi-signed primary identity while applying Pi extension guarantees"
-}
-
-test_pi_diagnostic_reports_unscoped_extension_discovery() {
-  local rec root home fakebin unscoped scoped holder_pid
-  rec=$(new_world pi-unscoped-discovery)
-  IFS='|' read -r root home fakebin <<EOF
-$rec
-EOF
-  make_fake_toolchain "$fakebin"
-
-  sleep 300 &
-  holder_pid=$!
-  make_fake_ps_pi_holder "$fakebin" "$holder_pid"
-  install_pi_turnend_extension_fixture "$root"
-  install_pi_watch_extension_fixture "$root"
-  write_pi_loaded_markers "$home" "$root" "$holder_pid"
-
-  unscoped=$(FM_FAKE_HARNESS=pi run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
-  scoped=$(FM_FAKE_HARNESS=pi FM_TEST_PI_ISOLATION=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
-  kill "$holder_pid" 2>/dev/null || true
-  wait "$holder_pid" 2>/dev/null || true
-
-  assert_contains "$unscoped" "PI_EXTENSION_ISOLATION: not scoped" "pi diagnostic stayed silent about a loaded-but-discovered extension session"
-  assert_contains "$unscoped" "restart through $root/bin/fm-pi-primary.sh" "pi isolation diagnostic omits the scoped primary launcher"
-  assert_not_contains "$scoped" "PI_EXTENSION_ISOLATION: not scoped" "pi isolation diagnostic fired for a session launched through the scoped launcher"
-
-  pass "session start reports a Pi primary whose extensions loaded without the discovery boundary"
 }
 
 test_pi_diagnostic_rejects_stale_loaded_marker() {
@@ -1360,12 +1394,17 @@ EOF
   write_pi_loaded_markers "$home" "$root" "$holder_pid"
 
   out=$(FM_FAKE_HARNESS=pi run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" "PI_WATCH_EXTENSION: not loaded" "pi diagnostic rejected a current pre-lock loaded marker"
+  assert_contains "$out" "PI_EXTENSION_ISOLATION: not scoped" "pi diagnostic accepted loaded extensions without the isolation boundary"
+
+  out=$(FM_FAKE_HARNESS=pi FM_TEST_PI_ISOLATION=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   kill "$holder_pid" 2>/dev/null || true
   wait "$holder_pid" 2>/dev/null || true
 
-  assert_not_contains "$out" "PI_WATCH_EXTENSION: not loaded" "pi diagnostic rejected a current pre-lock loaded marker"
+  assert_not_contains "$out" "PI_WATCH_EXTENSION: not loaded" "scoped Pi diagnostic rejected current loaded markers"
+  assert_not_contains "$out" "PI_EXTENSION_ISOLATION: not scoped" "scoped Pi diagnostic rejected the launcher marker"
 
-  pass "session start accepts current Pi markers written before lock acquisition"
+  pass "session start accepts current Pi markers only inside the isolated launcher boundary"
 }
 
 test_pi_diagnostic_rejects_missing_turnend_guard_marker() {
@@ -1423,6 +1462,7 @@ EOF
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
+test_trace_context_effective_state_is_frozen_after_lock
 test_session_lock_concurrent_single_winner
 test_output_ordering_diagnostics_lead
 test_herdr_backend_diagnostics_follow_real_session_start
@@ -1444,8 +1484,9 @@ test_next_step_sources_x_mode_cadence
 test_next_step_afk_delegates_to_daemon
 test_supervision_block_exactly_one_and_pi_diagnostic
 test_pi_signed_primary_uses_pi_extensions_without_identity_normalization
-test_pi_diagnostic_reports_unscoped_extension_discovery
 test_pi_diagnostic_rejects_stale_loaded_marker
 test_pi_diagnostic_accepts_prelock_loaded_marker
 test_pi_diagnostic_rejects_missing_turnend_guard_marker
 test_pi_diagnostic_rejects_previous_session_loaded_marker
+
+echo "# fm-session-start.test.sh: all assertions passed"

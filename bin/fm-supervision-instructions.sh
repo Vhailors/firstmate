@@ -88,10 +88,9 @@ esac
 [ -f "$SNIPPET" ] || SNIPPET="$DOC_DIR/unknown.md"
 
 checkpoint_seconds=${FM_CODEX_WATCH_CHECKPOINT:-180}
-pi_launcher="$FM_ROOT/bin/fm-pi-primary.sh"
-[ "$HARNESS" != pi-signed ] || pi_launcher="FM_PI_HARNESS=pi-signed $pi_launcher"
 pi_ext="$FM_ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 pi_turnend_ext="$FM_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
+pi_launcher="$FM_ROOT/bin/fm-pi-primary.sh"
 x_mode_env="$CONFIG/x-mode.env"
 
 shell_quote() {
@@ -138,7 +137,7 @@ repair_line() {
 
   case "$HARNESS" in
     claude)
-      printf '%s%s\n' "$prefix" 'repair missing watcher supervision with bin/fm-watch-arm.sh as its own Claude Code background task, never shell &.'
+      printf '%s%s\n' "$prefix" 'watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.'
       ;;
     codex)
       printf '%s%s%s%s\n' "$prefix" 'repair missing watcher supervision with a foreground checkpoint: bin/fm-watch-checkpoint.sh --seconds ' "$checkpoint_seconds" '.'

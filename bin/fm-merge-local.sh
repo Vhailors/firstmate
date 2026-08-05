@@ -12,8 +12,8 @@
 #
 # A task dispatched with fm-spawn.sh --no-merge records merge=blocked and is
 # refused here before any git state changes; bin/fm-merge-authority-lib.sh owns
-# that contract and the leading --captain-authorized that lifts it.
-# Usage: fm-merge-local.sh [--captain-authorized] <task-id>
+# that contract. No merge-command flag lifts the block.
+# Usage: fm-merge-local.sh <task-id>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,14 +22,16 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-merge-authority-lib.sh
 . "$SCRIPT_DIR/fm-merge-authority-lib.sh"
-fm_merge_authority_parse_leading "$@"
-set -- "${FM_MERGE_ARGS[@]+"${FM_MERGE_ARGS[@]}"}"
+if [ "${1:-}" = --captain-authorized ]; then
+  echo "error: --captain-authorized is not supported; a merge command cannot lift merge=blocked" >&2
+  exit 2
+fi
 "$FM_ROOT/bin/fm-guard.sh" || true
-ID=${1:?usage: fm-merge-local.sh [--captain-authorized] <task-id>}
+ID=${1:?usage: fm-merge-local.sh <task-id>}
 META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
 
-fm_merge_authority_check "$META" "$ID" "$FM_MERGE_AUTHORIZED" || exit 1
+fm_merge_authority_check "$META" "$ID" || exit 1
 
 PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)

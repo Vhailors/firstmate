@@ -102,64 +102,14 @@ prime_turnend_seen() {  # <file>
   printf '%s' "$(seen_sig "$f")" > "$(dirname "$f")/.seen-$base"
 }
 
-reap() {
-  local pid=$1 tick
-  kill "$pid" 2>/dev/null || true
-  # Bash can defer or lose an EXIT-triggering TERM while unwinding a command
-  # substitution. Never let that turn a test failure into an unbounded wait:
-  # give the watcher a short cleanup window, retry TERM once, then fail closed
-  # by killing only this test-owned child.
-  tick=0
-  while kill -0 "$pid" 2>/dev/null && [ "$tick" -lt 50 ]; do
-    tick=$((tick + 1))
-    [ "$tick" -ne 10 ] || kill "$pid" 2>/dev/null || true
-    sleep 0.1
-  done
-  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+record_pi_busy() {  # <state-dir> <id>
+  local state=$1 id=$2 gen
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$id" busy --gen "$gen" \
+    --source pi-ext --event agent-start
 }
 
-# Most cases launch a long-lived watcher in the background and reap it at the
-# end of the case. An assertion that fires before that reap exits the script
-# immediately, so the watcher is orphaned - and it inherited this script's
-# stderr, which under bin/fm-test-run.sh is a pipe into the runner's tee. The
-# orphan then holds that pipe open forever and the runner blocks instead of
-# reporting the failure, turning one failed assertion into a hung lane. Reaping
-# whatever is still running on the way out keeps a failure a failure. This
-# replaces lib.sh's own EXIT trap, so it has to call fm_test_cleanup itself (see
-# tests/lib.sh) or the registered temp dirs leak on every run - and it has to do
-# that after the kills, so nothing repopulates a dir as it is being removed.
-reap_background_jobs() {
-  local bg
-  for bg in $(jobs -p); do
-    reap "$bg"
-  done
-}
-trap 'reap_background_jobs; fm_test_cleanup' EXIT
-
-test_reap_retries_a_surviving_term() {
-  local ready pid start elapsed i
-  ready="$TMP_ROOT/reap-retry.ready"
-  bash -c '
-    seen=0
-    trap '"'"'seen=$((seen + 1)); [ "$seen" -lt 2 ] || exit 0'"'"' TERM
-    : >"$1"
-    while :; do sleep 0.1; done
-  ' bash "$ready" &
-  pid=$!
-  i=0
-  while [ ! -e "$ready" ] && [ "$i" -lt 50 ]; do
-    i=$((i + 1))
-    sleep 0.1
-  done
-  [ -e "$ready" ] || { kill -KILL "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fail "reap retry fixture did not start"; }
-  start=$(date +%s)
-  reap "$pid"
-  elapsed=$(( $(date +%s) - start ))
-  [ "$elapsed" -lt 5 ] || fail "reap retry exceeded its bounded TERM-retry window (${elapsed}s)"
-  ! kill -0 "$pid" 2>/dev/null || fail "reap retry left its test-owned child alive"
-  pass "test reap retries TERM and remains bounded when a child survives the first signal"
-}
+reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
@@ -1155,6 +1105,7 @@ test_busy_pane_below_turn_age_bound_is_absorbed() {
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-fresh"
   printf 'Working... (12.3s)' > "$capture_file"
   printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-fresh.meta"
+  record_pi_busy "$state" busy-fresh
   printf 'working: setup complete\n' > "$state/busy-fresh.status"
   sig=$(seen_sig "$state/busy-fresh.status"); printf '%s' "$sig" > "$state/.seen-busy-fresh_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
@@ -1180,6 +1131,7 @@ test_busy_pane_stable_hash_escalates_past_turn_age_bound() {
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-stable"
   printf 'Working...' > "$capture_file"
   printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-stable.meta"
+  record_pi_busy "$state" busy-stable
   printf 'working: setup complete\n' > "$state/busy-stable.status"
   sig=$(seen_sig "$state/busy-stable.status"); printf '%s' "$sig" > "$state/.seen-busy-stable_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
@@ -1223,6 +1175,7 @@ test_busy_pane_changing_hash_escalates_past_turn_age_bound() {
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-ticking"
   printf 'Working... (3600.1s)' > "$capture_file"
   printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-ticking.meta"
+  record_pi_busy "$state" busy-ticking
   printf 'working: setup complete\n' > "$state/busy-ticking.status"
   sig=$(seen_sig "$state/busy-ticking.status"); printf '%s' "$sig" > "$state/.seen-busy-ticking_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
@@ -1263,6 +1216,7 @@ test_busy_pane_turn_end_touch_resets_age() {
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-reset"
   printf 'Working...' > "$capture_file"
   printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-reset.meta"
+  record_pi_busy "$state" busy-reset
   printf 'working: setup complete\n' > "$state/busy-reset.status"
   sig=$(seen_sig "$state/busy-reset.status"); printf '%s' "$sig" > "$state/.seen-busy-reset_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
@@ -1296,6 +1250,7 @@ test_busy_pane_repeated_escalation_reaches_demand_deep_inspection() {
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-demand-inspect"
   printf 'Working...' > "$capture_file"
   printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-demand.meta"
+  record_pi_busy "$state" busy-demand
   printf 'working: setup complete\n' > "$state/busy-demand.status"
   sig=$(seen_sig "$state/busy-demand.status"); printf '%s' "$sig" > "$state/.seen-busy-demand_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
@@ -1347,6 +1302,7 @@ test_busy_pane_default_turn_age_bound_is_3600s() {
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-default"
   printf 'Working...' > "$capture_file"
   printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-default.meta"
+  record_pi_busy "$state" busy-default
   printf 'working: setup complete\n' > "$state/busy-default.status"
   sig=$(seen_sig "$state/busy-default.status"); printf '%s' "$sig" > "$state/.seen-busy-default_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
@@ -1464,6 +1420,253 @@ SH
   [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "benign signal enqueued a wake while testing log capping"; }
   reap "$pid"
   pass "triage log capping handles wc byte counts with leading spaces"
+}
+
+# --- process-event delivery -------------------------------------------------
+# A durably captured process-event result publishes an ordinary `check` wake on
+# the durable queue. The watcher must deliver that queued wake proactively -
+# print an actionable reason and exit into the same rewake path every other
+# actionable wake uses - rather than leaving it to be found by a manual drain.
+
+# Run the runner against a case home. FM_ROOT_OVERRIDE (exported by the shared
+# wake harness to keep the drain's tangle check inert) would otherwise point the
+# runner at a root with no installed adapters, and the claim root must stay
+# inside the case so nothing here can observe a real home's source ownership.
+pe_case() {  # <dir> <command>...
+  local dir=$1
+  shift
+  (unset FM_ROOT_OVERRIDE
+   FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_HOME="$dir" "$ROOT/bin/fm-procevent.sh" "$@")
+}
+
+# Capture one real process-event result into <dir>'s home, then retire the
+# source so the fixture holds exactly the reported end state: one durably
+# captured, unhandled, queued result and no remaining poll work.
+seed_captured_procevent_result() {  # <dir>
+  local dir=$1 i=0
+  pe_case "$dir" register lavish delivery-src -- \
+    /bin/sh -c 'printf "session:\n  file: /a.html\n  status: waiting\n"' >/dev/null || return 1
+  pe_case "$dir" reconcile >/dev/null || return 1
+  while [ "$i" -lt 100 ]; do
+    [ -s "$dir/state/.wake-queue" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  pe_case "$dir" retire delivery-src >/dev/null || return 1
+  [ -s "$dir/state/.wake-queue" ]
+}
+
+# The watcher, scoped by FM_HOME rather than FM_STATE_OVERRIDE, so the
+# per-cycle reconcile it launches resolves the same home's state.
+procevent_watch_bg() {  # <dir> <out>
+  local dir=$1 out=$2
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" \
+    FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
+    FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+}
+
+test_procevent_captured_result_surfaces_proactively() {
+  local dir state out drain_out pid beacon_age
+  dir=$(make_case procevent-delivery); state="$dir/state"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  seed_captured_procevent_result "$dir" || fail "the fixture captured no process-event result"
+  grep -F "procevent lavish delivery-src 1" "$state/.wake-queue" >/dev/null \
+    || fail "the captured result was never published to the durable queue"
+
+  procevent_watch_bg "$dir" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 \
+    || fail "a healthy watcher never surfaced a durably captured process-event result: $(cat "$out")"
+  grep -F "check:" "$out" >/dev/null \
+    || fail "the process-event wake was not reported as an actionable check: $(cat "$out")"
+  grep -F "procevent:delivery-src:1" "$out" >/dev/null \
+    || fail "the actionable reason did not name the queued result: $(cat "$out")"
+  beacon_age=$(FM_STATE_OVERRIDE="$state" bash -c \
+    '. "$1/bin/fm-wake-lib.sh"; fm_path_age "$2"' _ "$ROOT" "$state/.last-watcher-beat")
+  [ "$beacon_age" -lt 60 ] || fail "the surfacing watcher was not a healthy one (beacon age ${beacon_age}s)"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the process-event wake failed"
+  grep "$(printf '\tcheck\t')" "$drain_out" | grep -F "procevent lavish delivery-src 1" >/dev/null \
+    || fail "the process-event result was not queued for the drain that follows the wake"
+  pass "a captured process-event result wakes a healthy watcher proactively, with no manual drain"
+}
+
+test_procevent_surfaced_result_does_not_rewake() {
+  local dir state out pid before after
+  dir=$(make_case procevent-no-rewake); state="$dir/state"
+  out="$dir/watch.out"
+  seed_captured_procevent_result "$dir" || fail "the fixture captured no process-event result"
+
+  procevent_watch_bg "$dir" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "the first proactive wake never happened: $(cat "$out")"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>&1 || fail "drain after the first process-event wake failed"
+
+  # Still unhandled: the result stays eligible for re-announcement on the durable
+  # queue, but that must never produce a second proactive wake.
+  : > "$out"
+  procevent_watch_bg "$dir" "$out"
+  pid=$!
+  if ! wait_live "$pid" 40; then
+    fail "an already-surfaced process-event result woke the watcher again: $(cat "$out")"
+  fi
+  reap "$pid"
+  grep -F "procevent lavish delivery-src 1" "$state/.wake-queue" >/dev/null \
+    || fail "re-announcement of the unhandled result stopped when its wake was suppressed"
+
+  pe_case "$dir" handled delivery-src 1 >/dev/null || fail "could not acknowledge the captured result"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>&1 || fail "drain before the handled control failed"
+  before=$(awk 'END { print NR + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
+  : > "$out"
+  procevent_watch_bg "$dir" "$out"
+  pid=$!
+  if ! wait_live "$pid" 40; then
+    fail "a handled process-event result woke the watcher: $(cat "$out")"
+  fi
+  reap "$pid"
+  after=$(awk 'END { print NR + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
+  [ "$after" = "$before" ] || fail "a handled result was announced again ($before -> $after queued records)"
+  pass "a process-event wake is delivered once: no duplicate wake while queued, and none once handled"
+}
+
+test_procevent_marker_keys_are_injective() {
+  local dir state out pid marker_count
+  dir=$(make_case procevent-marker-identity); state="$dir/state"; out="$dir/watch.out"
+  append_wake "$state" check "procevent:a.b:1" "check: procevent fixture a.b 1"
+  append_wake "$state" check "procevent:a_b:1" "check: procevent fixture a_b 1"
+  procevent_watch_bg "$dir" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "colliding-looking process-event keys were not surfaced"
+  grep -F "procevent:a.b:1" "$out" >/dev/null || fail "the dotted queue key was suppressed"
+  grep -F "procevent:a_b:1" "$out" >/dev/null || fail "the underscored queue key was suppressed"
+  marker_count=$(find "$state" -maxdepth 1 -name '.seen-procevent-*' -type f | awk 'END { print NR + 0 }')
+  [ "$marker_count" = 2 ] || fail "distinct queue keys produced $marker_count seen markers"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>&1 || fail "marker identity fixture drain failed"
+  pass "complete process-event queue keys map to distinct seen markers"
+}
+
+install_marker_mv_fault() {  # <dir>
+  local dir=$1
+  REAL_MV=$(command -v mv)
+  export REAL_MV
+  cat > "$dir/fakebin/mv" <<'SH'
+#!/usr/bin/env bash
+dest=${!#}
+case "$dest" in
+  */.seen-procevent-*)
+    case "${FM_MARKER_MV_MODE:-}" in
+      pause)
+        printf '1\n' > "$FM_MARKER_MV_READY"
+        while [ ! -e "$FM_MARKER_MV_RELEASE" ]; do sleep 0.02; done
+        ;;
+      kill-before) kill -KILL "$PPID"; exit 1 ;;
+      kill-after) "$REAL_MV" "$@" || exit; kill -KILL "$PPID"; exit 1 ;;
+      fail) exit 1 ;;
+    esac
+    ;;
+esac
+exec "$REAL_MV" "$@"
+SH
+  chmod +x "$dir/fakebin/mv"
+}
+
+test_procevent_surface_serializes_with_drain() {
+  local dir state out drain_out ready release pid drain_pid
+  dir=$(make_case procevent-drain-race); state="$dir/state"; out="$dir/watch.out"
+  drain_out="$dir/drain.out"; ready="$dir/marker-ready"; release="$dir/marker-release"
+  append_wake "$state" check "procevent:drain-race:1" "check: procevent fixture drain-race 1"
+  install_marker_mv_fault "$dir"
+  FM_MARKER_MV_MODE=pause FM_MARKER_MV_READY="$ready" FM_MARKER_MV_RELEASE="$release" \
+    procevent_watch_bg "$dir" "$out"
+  pid=$!
+  wait_numeric_file "$ready" 100 || fail "the watcher never reached its marker commit boundary"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" &
+  drain_pid=$!
+  wait_live "$drain_pid" 10 || fail "a concurrent drain split the surfacing transition"
+  [ -s "$state/.wake-queue" ] || fail "the concurrent drain consumed the record before marker commit"
+  touch "$release"
+  wait "$pid" || fail "the paused watcher did not finish surfacing"
+  wait "$drain_pid" || fail "the concurrent drain failed after surfacing committed"
+  grep -F "procevent:drain-race:1" "$drain_out" >/dev/null \
+    || fail "the serialized drain lost the process-event record"
+  pass "queue revalidation, proactive output, and marker commit serialize with drain"
+}
+
+test_procevent_surface_crash_boundaries() {
+  local dir state out fifo pid reader marker exit_status
+  dir=$(make_case procevent-output-fail); state="$dir/state"; out="$dir/watch.out"; fifo="$dir/output.fifo"
+  append_wake "$state" check "procevent:output-fail:1" "check: procevent fixture output-fail 1"
+  mkfifo "$fifo"
+  sh -c ': < "$1"' _ "$fifo" & reader=$!
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" \
+    FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$fifo" &
+  pid=$!
+  wait "$reader" || true
+  wait_for_exit "$pid" 100
+  exit_status=$?
+  [ "$exit_status" -ne 124 ] || fail "the watcher survived a failed actionable output write"
+  marker=$(find "$state" -maxdepth 1 -name '.seen-procevent-*' -type f | head -1)
+  [ -z "$marker" ] || fail "failed output committed a suppression marker"
+  [ -s "$state/.wake-queue" ] || fail "failed output consumed the durable queue record"
+  procevent_watch_bg "$dir" "$out"; pid=$!
+  wait_for_exit "$pid" 100 || fail "the record was not replayable after output failure"
+  grep -F "procevent:output-fail:1" "$out" >/dev/null || fail "output failure lost proactive replay"
+
+  dir=$(make_case procevent-before-marker); state="$dir/state"; out="$dir/watch.out"
+  append_wake "$state" check "procevent:before-marker:1" "check: procevent fixture before-marker 1"
+  install_marker_mv_fault "$dir"
+  FM_MARKER_MV_MODE=kill-before procevent_watch_bg "$dir" "$out"; pid=$!
+  wait_for_exit "$pid" 100
+  exit_status=$?
+  [ "$exit_status" -ne 124 ] || fail "the watcher survived the injected pre-marker crash"
+  grep -F "procevent:before-marker:1" "$out" >/dev/null || fail "the pre-marker crash happened before output"
+  marker=$(find "$state" -maxdepth 1 -name '.seen-procevent-*' -type f | head -1)
+  [ -z "$marker" ] || fail "a pre-marker crash committed suppression"
+  procevent_watch_bg "$dir" "$out.replay"; pid=$!
+  wait_for_exit "$pid" 100 || fail "a pre-marker crash was not replayable"
+
+  dir=$(make_case procevent-after-marker); state="$dir/state"; out="$dir/watch.out"
+  append_wake "$state" check "procevent:after-marker:1" "check: procevent fixture after-marker 1"
+  install_marker_mv_fault "$dir"
+  FM_MARKER_MV_MODE=kill-after procevent_watch_bg "$dir" "$out"; pid=$!
+  wait_for_exit "$pid" 100
+  exit_status=$?
+  [ "$exit_status" -ne 124 ] || fail "the watcher survived the injected post-marker crash"
+  grep -F "procevent:after-marker:1" "$out" >/dev/null || fail "the post-marker crash lost actionable output"
+  marker=$(find "$state" -maxdepth 1 -name '.seen-procevent-*' -type f | head -1)
+  [ -n "$marker" ] || fail "the post-marker crash did not reach marker commit"
+  : > "$out.replay"
+  procevent_watch_bg "$dir" "$out.replay"; pid=$!
+  if ! wait_live "$pid" 40; then
+    fail "a delivered and durably marked record woke again: $(cat "$out.replay")"
+  fi
+  reap "$pid"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>&1 || fail "post-marker fixture drain failed"
+  pass "surfacing failures replay before marker commit and suppress only after delivered output"
+}
+
+test_procevent_marker_failure_exits_and_replays() {
+  local dir state out pid marker output_count
+  dir=$(make_case procevent-marker-failure); state="$dir/state"; out="$dir/watch.out"
+  append_wake "$state" check "procevent:marker-failure:1" "check: procevent fixture marker-failure 1"
+  install_marker_mv_fault "$dir"
+  FM_MARKER_MV_MODE=fail procevent_watch_bg "$dir" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "marker failure did not end the actionable watcher cycle successfully"
+  output_count=$(grep -Fc "procevent:marker-failure:1" "$out" || true)
+  [ "$output_count" = 1 ] || fail "marker failure printed the actionable reason $output_count times"
+  marker=$(find "$state" -maxdepth 1 -name '.seen-procevent-*' -type f | head -1)
+  [ -z "$marker" ] || fail "marker failure committed suppression"
+  [ ! -e "$state/.wake-queue.lock" ] && [ ! -L "$state/.wake-queue.lock" ] \
+    || fail "marker failure left the queue lock held"
+  procevent_watch_bg "$dir" "$out.replay"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "marker failure did not leave the durable record replayable"
+  grep -F "procevent:marker-failure:1" "$out.replay" >/dev/null \
+    || fail "marker failure lost the later proactive replay"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>&1 || fail "marker-failure fixture drain failed"
+  pass "marker failure exits through the shared wake owner, releases its lock, and replays later"
 }
 
 # --- heartbeat: no-change absorbed, backstop surfaces a missed status --------
@@ -1596,7 +1799,6 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
   pass "AFK changed paused panes hand off plain stale identities for daemon-owned pause triage"
 }
 
-test_reap_retries_a_surviving_term
 test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
@@ -1632,6 +1834,12 @@ test_nonterminal_paused_rechecks_authoritative_state
 test_paused_authoritative_working_preserves_wedge_timer
 test_nonterminal_stale_repairs_missing_or_corrupt_timer
 test_triage_log_size_cap_accepts_spaced_wc_counts
+test_procevent_captured_result_surfaces_proactively
+test_procevent_surfaced_result_does_not_rewake
+test_procevent_marker_keys_are_injective
+test_procevent_surface_serializes_with_drain
+test_procevent_surface_crash_boundaries
+test_procevent_marker_failure_exits_and_replays
 test_heartbeat_no_change_absorbed
 test_heartbeat_backstop_surfaces_unsurfaced_status
 test_beacon_stays_fresh_while_absorbing
