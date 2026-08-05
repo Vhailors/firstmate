@@ -6,6 +6,7 @@ data/
 .pi/git/
 .pi/npm/
 .fm-secondmate-home
+.fm-secondmate-parent
 .DS_Store
 __pycache__/
 *.pyc
