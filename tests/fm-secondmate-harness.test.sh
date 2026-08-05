@@ -2052,7 +2052,9 @@ SH
       "$ROOT/bin/fm-config-push.sh" > "$first_out" 2>&1
   ) &
   first_pid=$!
-  for _ in $(seq 1 100); do
+  # Version-floor discovery can make the guarded first push exceed two seconds
+  # on slower developer and VPS hosts; keep the wait bounded but non-flaky.
+  for _ in $(seq 1 500); do
     [ -e "$entered" ] && break
     sleep 0.02
   done
