@@ -15,6 +15,7 @@ ACCOUNT_HOME="$TMP_ROOT/account"
 STATE_ROOT="$TMP_ROOT/remote-jobs"
 RUNTIME_BIN="$TMP_ROOT/runtime-bin"
 FAKE_PERL_LOG="$TMP_ROOT/perl.log"
+FAKE_LAUNCH_LOG="$TMP_ROOT/launch-tools.log"
 REAL_GIT=$(command -v git)
 OTHER_PID=
 RECOVERY_WORKER_PID=
@@ -68,7 +69,14 @@ cat > "$RUNTIME_BIN/perl" <<'SH'
 printf 'invoked\n' >> "$FM_FAKE_PERL_LOG"
 exit 127
 SH
-chmod +x "$RUNTIME_BIN/perl"
+for tool in env nohup; do
+  cat > "$RUNTIME_BIN/$tool" <<'SH'
+#!/bin/bash
+printf '%s\n' "${0##*/}" >> "$FM_FAKE_LAUNCH_LOG"
+exit 0
+SH
+done
+chmod +x "$RUNTIME_BIN/perl" "$RUNTIME_BIN/env" "$RUNTIME_BIN/nohup"
 
 git -C "$REMOTE_ROOT" init -q -b main
 git -C "$REMOTE_ROOT" config user.email test@example.com
@@ -297,13 +305,15 @@ pass "active jobs keep the worker ready for concurrent requests"
 
 OLD_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
 printf '\n' >> "$REMOTE_ROOT/bin/fm-remote-job-worker.sh"
-fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" \
+PATH="$RUNTIME_BIN:$PATH" FM_FAKE_LAUNCH_LOG="$FAKE_LAUNCH_LOG" \
+  fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" \
   || fail "$FM_REMOTE_JOB_ERROR"
 NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
 [ "$NEW_WORKER_PID" != "$OLD_WORKER_PID" ] || fail "ensure retained a worker running stale code"
 fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$ACCOUNT_HOME" \
   || fail "the replacement worker did not publish the current code identity"
-pass "ensure replaces a live worker after its code changes"
+assert_absent "$FAKE_LAUNCH_LOG" "worker replacement used a PATH-shadowed launch tool"
+pass "ensure replaces a live worker with fixed system launch tools after its code changes"
 
 RELOCATED_ROOT="$TMP_ROOT/relocated-root"
 cp -R "$REMOTE_ROOT" "$RELOCATED_ROOT"
