@@ -202,6 +202,49 @@ SH
   pass "fm-lint.sh passes a clean fixture"
 }
 
+test_path_shadowed_env_cannot_skip_lint() {
+  local tmp fakebin bad telemetry marker out rc mode
+  tmp=$(fm_test_tmproot fm-lint-env-shadow)
+  fakebin=$(fm_fakebin "$tmp")
+  bad="$tmp/bad.sh"
+  telemetry="$tmp/telemetry.tsv"
+  marker="$tmp/path-env-ran"
+  cat > "$fakebin/env" <<'SH'
+#!/usr/bin/env bash
+touch "$FM_TEST_ENV_MARKER"
+exit 0
+SH
+  cat > "$fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  printf 'ShellCheck - shell script analysis tool\nversion: 0.11.0\n'
+  exit 0
+fi
+exit 23
+SH
+  cat > "$bad" <<'SH'
+#!/usr/bin/env bash
+printf 'fixture\n'
+SH
+  chmod +x "$fakebin/env" "$fakebin/shellcheck"
+
+  for mode in plain telemetry; do
+    rm -f "$marker" "$telemetry"
+    rc=0
+    if [ "$mode" = telemetry ]; then
+      out=$(PATH="$fakebin:$PATH" FM_TEST_ENV_MARKER="$marker" FM_LINT_TELEMETRY="$telemetry" \
+        "$LINT" "$bad" 2>&1) || rc=$?
+      [ -s "$telemetry" ] || fail "telemetry lint did not publish its result"
+    else
+      out=$(PATH="$fakebin:$PATH" FM_TEST_ENV_MARKER="$marker" "$LINT" "$bad" 2>&1) || rc=$?
+    fi
+    [ "$rc" -eq 23 ] \
+      || fail "$mode lint lost the worker's failure through cleanup (exit $rc)"$'\n'"$out"
+    [ ! -e "$marker" ] || fail "$mode lint executed a PATH-shadowed env helper"
+  done
+  pass "lint workers ignore PATH-shadowed env helpers and preserve failure status through cleanup"
+}
+
 test_jobs_are_deterministic_and_complete() {
   if ! pinned_ready; then
     pass "SKIP (ShellCheck $REQUIRED not resolved): deterministic bounded jobs check"
@@ -433,6 +476,7 @@ test_rejects_wrong_shellcheck_version
 test_catches_a_real_lint_defect
 test_ignores_ambient_shellcheck_opts
 test_clean_fixture_passes
+test_path_shadowed_env_cannot_skip_lint
 test_jobs_are_deterministic_and_complete
 test_worker_trees_stop_on_signal
 test_seeded_module_boundary_parity

@@ -194,7 +194,14 @@ fm_lint_cleanup() {
   done
   rm -rf "$TMP_ROOT"
 }
-trap fm_lint_cleanup EXIT
+# shellcheck disable=SC2329 # Registered by the EXIT trap below.
+fm_lint_exit() {  # <status>
+  local status=$1
+  trap - EXIT
+  fm_lint_cleanup
+  exit "$status"
+}
+trap 'fm_lint_exit "$?"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -290,18 +297,18 @@ fm_lint_run_worker() {  # <worker-index>
     if [ "$(uname)" = Darwin ]; then
       exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
         /usr/bin/time -lp -o "$timing" \
-        env FM_LINT_INTERNAL=1 FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
+        /usr/bin/env FM_LINT_INTERNAL=1 FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
         "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
     else
       exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
         /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M' -o "$timing" \
-        env FM_LINT_INTERNAL=1 FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
+        /usr/bin/env FM_LINT_INTERNAL=1 FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
         "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
     fi
   else
     [ -z "$TELEMETRY" ] || printf 'timing_unavailable=1\n' > "$timing"
     exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
-      env FM_LINT_INTERNAL=1 FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
+      /usr/bin/env FM_LINT_INTERNAL=1 FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
       "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
   fi
 }
