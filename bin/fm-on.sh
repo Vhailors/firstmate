@@ -33,6 +33,8 @@
 # ordinary LAN fallback. Before SSH, fm-on requires the local tailscale CLI to
 # resolve and ping that peer once. A failed peer check stops before SSH, so an
 # alias with stale alternate addressing cannot silently become the route.
+# FM_TAILSCALE_BIN overrides which tailscale CLI that check runs, for an
+# account whose CLI is off PATH and for tests; it must be executable.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

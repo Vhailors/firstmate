@@ -192,7 +192,7 @@ Workspace and tab ids support verification and cleanup but are not inferred from
 
 ## Current transport behavior
 
-The adapter starts and polls a named server before workspace, tab, pane, or agent calls.
+The adapter starts and polls a named server before workspace, tab, pane, or agent calls, except on a route that requires an already-running operator-visible session, where it refuses instead of starting one.
 Every Herdr invocation goes through `fm_backend_herdr_cli`, which sets the environment and passes an explicit trailing `--session <name>`.
 An environment variable alone is not reliable when another Herdr server is running.
 

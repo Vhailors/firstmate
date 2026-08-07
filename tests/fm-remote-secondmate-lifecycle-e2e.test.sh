@@ -134,7 +134,7 @@ done
 host=$1
 entry=$2
 shift 2
-[ "$host" = remote-mac ] || exit 91
+case "$host" in remote-mac|fm-thinkpad) ;; *) exit 91 ;; esac
 [ "$entry" = fm-remote-entrypoint.sh ] || exit 92
 cd "$FM_FAKE_REMOTE_CWD" || exit 93
 argv_b64=$4
@@ -161,7 +161,15 @@ esac
 # owns the doctor's real behavior against controlled account fixtures; this
 # boundary owns only what the callers do with its verdict.
 if [ "$command_name" = fm-remote-doctor.sh ]; then
-  printf '%s %s\n' "${FM_FAKE_SSH_MODE:-normal}" "${_command_action:--}" >> "$FM_FAKE_DOCTOR_LOG"
+  # Record the doctor's complete argument vector so a test reads back the exact
+  # session the caller selected, not merely that a session flag was passed.
+  doctor_argv=$(perl -MMIME::Base64=decode_base64 -e '
+    my $data=decode_base64($ARGV[0]);
+    my @args=split(/\0/, $data);
+    shift @args;
+    print join(" ", @args);
+  ' "$argv_b64")
+  printf '%s %s\n' "${FM_FAKE_SSH_MODE:-normal}" "$doctor_argv" >> "$FM_FAKE_DOCTOR_LOG"
   case "${FM_FAKE_SSH_MODE:-normal}" in
     unreachable) exit 255 ;;
     doctor-fix-unknown)
@@ -241,6 +249,15 @@ case "${FM_FAKE_SSH_MODE:-normal}" in
 esac
 SH
 chmod +x "$FAKEBIN/fake-ssh"
+
+# fm-on.sh gates the standing fm-thinkpad route on a Tailscale peer check before
+# SSH, so a ThinkPad-routed seed needs that CLI present. tests/fm-on.test.sh owns
+# the gate's own reachable and unreachable behavior.
+cat > "$FAKEBIN/fake-tailscale" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$FAKEBIN/fake-tailscale"
 
 publish_healthy_watcher_identity() { # <state> <home> <watch-script>
   local state=$1 home=$2 watch=$3 identity
@@ -393,8 +410,8 @@ assert_present "$TMP_ROOT/seed-parent/data/seed-unknown/brief.md" \
   "unknown readiness removed the scaffolded brief"
 assert_absent "$TMP_ROOT/seed-unknown-home" \
   "unknown readiness proceeded into remote home provisioning"
-[ "$(cat "$DOCTOR_LOG")" = 'doctor-fix-unknown --herdr-session
-doctor-fix-unknown --fix' ] || fail "unknown readiness did not occur during the repair stage"$'\n'"$(cat "$DOCTOR_LOG")"
+[ "$(cat "$DOCTOR_LOG")" = 'doctor-fix-unknown --herdr-session fm-remote
+doctor-fix-unknown --fix --herdr-session fm-remote' ] || fail "unknown readiness did not occur during the repair stage"$'\n'"$(cat "$DOCTOR_LOG")"
 pass "unknown readiness preserves its route and brief for reconciliation"
 
 # A host that cannot hold a durable second mate must be rejected by the
@@ -418,9 +435,9 @@ assert_no_grep '- seed-toolless ' "$TMP_ROOT/seed-parent/data/secondmates.md" \
   "the refused route survived the preflight rollback"
 assert_absent "$TMP_ROOT/seed-parent/data/seed-toolless/brief.md" \
   "the refused route left its scaffolded charter behind"
-[ "$(cat "$DOCTOR_LOG")" = 'doctor-human --herdr-session
-doctor-human --fix
-doctor-human --herdr-session' ] || fail "the seed did not run the check, repair, re-check sequence"$'\n'"$(cat "$DOCTOR_LOG")"
+[ "$(cat "$DOCTOR_LOG")" = 'doctor-human --herdr-session fm-remote
+doctor-human --fix --herdr-session fm-remote
+doctor-human --herdr-session fm-remote' ] || fail "the seed did not run the check, repair, re-check sequence"$'\n'"$(cat "$DOCTOR_LOG")"
 pass "remote seeding checks, repairs, and re-checks readiness, then stops on a remaining gap"
 
 # The same gate must accept a host whose only gaps were repairable.
@@ -432,9 +449,9 @@ out=$(FM_SECONDMATE_CHARTER='Repairable host charter.' FM_SECONDMATE_SCOPE='repa
   || fail "seeding refused a host whose gaps the repair closed"$'\n'"$out"
 assert_present "$TMP_ROOT/seed-repair-home/.fm-secondmate-home" "the repaired host was never provisioned"
 assert_grep '- seed-repair ' "$TMP_ROOT/seed-parent/data/secondmates.md" "the repaired route was not registered"
-[ "$(cat "$DOCTOR_LOG")" = 'doctor-fixable --herdr-session
-doctor-fixable --fix
-doctor-fixable --herdr-session' ] || fail "the repaired seed did not re-check after its repair"$'\n'"$(cat "$DOCTOR_LOG")"
+[ "$(cat "$DOCTOR_LOG")" = 'doctor-fixable --herdr-session fm-remote
+doctor-fixable --fix --herdr-session fm-remote
+doctor-fixable --herdr-session fm-remote' ] || fail "the repaired seed did not re-check after its repair"$'\n'"$(cat "$DOCTOR_LOG")"
 pass "remote seeding proceeds once the repair closes every gap"
 
 # Provision and register the remote route from the captain-facing primary.
@@ -681,6 +698,62 @@ assert_no_grep 'session stop' "$HERDR_LOG" "visible retirement stopped a shared 
 assert_no_grep 'server stop' "$HERDR_LOG" "visible retirement stopped a Herdr server"
 pass "visible default launch, exact-pane control, and retirement preserve personal and background work"
 
+# Session selection itself is the operator contract: the ThinkPad route defaults
+# to the visible session, every other new remote route must choose explicitly,
+# and an already-pinned route never migrates as a side effect of re-seeding.
+registry_before_selection=$(cat "$PARENT/data/secondmates.md")
+: > "$DOCTOR_LOG"
+set +e
+out=$(FM_SECONDMATE_CHARTER='Unpinned charter.' FM_SECONDMATE_SCOPE='unpinned work' \
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" unpinned remote-mac "$REMOTE_ROOT" \
+  "$TMP_ROOT/unpinned-home" --no-projects 2>&1)
+unpinned_rc=$?
+set -e
+[ "$unpinned_rc" -ne 0 ] || fail "a new non-thinkpad remote route was seeded without an explicit session"
+assert_contains "$out" 'require --herdr-session visible-default or --herdr-session fm-remote' \
+  "the unpinned refusal did not name the explicit session choice"
+[ ! -s "$DOCTOR_LOG" ] || fail "an unpinned remote seed reached the host"$'\n'"$(cat "$DOCTOR_LOG")"
+assert_absent "$TMP_ROOT/unpinned-home" "an unpinned remote seed provisioned a home"
+[ "$(cat "$PARENT/data/secondmates.md")" = "$registry_before_selection" ] \
+  || fail "an unpinned remote seed changed the registry"
+
+# The ThinkPad alias needs no flag: it resolves to the visible default session
+# and carries that exact selection into the readiness gate.
+: > "$DOCTOR_LOG"
+set +e
+out=$(FM_SECONDMATE_CHARTER='ThinkPad charter.' FM_SECONDMATE_SCOPE='thinkpad device work' \
+  FM_FAKE_SSH_MODE=doctor-human FM_TAILSCALE_BIN="$FAKEBIN/fake-tailscale" \
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" thinkpad fm-thinkpad "$REMOTE_ROOT" \
+  "$TMP_ROOT/thinkpad-home" --no-projects 2>&1)
+thinkpad_rc=$?
+set -e
+[ "$thinkpad_rc" -ne 0 ] || fail "the deliberately unready ThinkPad fixture reported a ready host"
+[ "$(cat "$DOCTOR_LOG")" = 'doctor-human --herdr-session default
+doctor-human --fix --herdr-session default
+doctor-human --herdr-session default' ] \
+  || fail "an unflagged fm-thinkpad seed did not gate on the visible default session"$'\n'"$(cat "$DOCTOR_LOG")"
+assert_no_grep '- thinkpad ' "$PARENT/data/secondmates.md" "the unready ThinkPad route stayed registered"
+
+# Re-seeding the fm-remote-pinned route with the other session must refuse
+# rather than migrate it, and must leave the recorded pin and home intact.
+: > "$DOCTOR_LOG"
+set +e
+out=$(FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
+  FM_SECONDMATE_SCOPE='iOS implementation and Xcode validation' \
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$REMOTE_HOME" \
+  --herdr-session visible-default alpha 2>&1)
+migrate_rc=$?
+set -e
+[ "$migrate_rc" -ne 0 ] || fail "re-seeding silently migrated a pinned route to another session"
+assert_contains "$out" 'already pinned to Herdr session fm-remote' \
+  "the migration refusal did not name the recorded session"
+[ ! -s "$DOCTOR_LOG" ] || fail "a refused session migration reached the host"$'\n'"$(cat "$DOCTOR_LOG")"
+[ "$(cat "$PARENT/data/secondmates.md")" = "$registry_before_selection" ] \
+  || fail "a refused session migration changed the registry"
+assert_grep 'remote_herdr_session=fm-remote' "$PARENT/state/ios.meta" \
+  "a refused session migration changed the recorded endpoint pin"
+pass "session selection defaults on fm-thinkpad, stays explicit elsewhere, and never silently migrates"
+
 rm -f "$TMP_ROOT/inherit.entered" "$TMP_ROOT/inherit.release" "$TMP_ROOT/inherit.payload"
 cat > "$PARENT/data/captain-shared.md" <<'EOF'
 # Shared captain preferences
@@ -899,9 +972,9 @@ rm -f "$TMP_ROOT/doctor.repaired"
   || fail "the stopped-server fixture did not make the pre-repair endpoint probe unreadable"
 launches_before_repair=$(grep -c '^tab create' "$HERDR_LOG" || true)
 BOOT_REPAIRED=$(FM_FAKE_SSH_MODE=doctor-fixable remote_env "$ROOT/bin/fm-bootstrap.sh")
-[ "$(cat "$DOCTOR_LOG")" = 'doctor-fixable --herdr-session
-doctor-fixable --fix
-doctor-fixable --herdr-session' ] || fail "liveness did not check, repair, and re-check readiness before probing"$'\n'"$(cat "$DOCTOR_LOG")"
+[ "$(cat "$DOCTOR_LOG")" = 'doctor-fixable --herdr-session fm-remote
+doctor-fixable --fix --herdr-session fm-remote
+doctor-fixable --herdr-session fm-remote' ] || fail "liveness did not check, repair, and re-check readiness before probing"$'\n'"$(cat "$DOCTOR_LOG")"
 assert_not_contains "$BOOT_REPAIRED" 'SECONDMATE_LIVENESS: secondmate ios:' \
   "successful pre-probe readiness repair produced a liveness failure"
 launches_after_repair=$(grep -c '^tab create' "$HERDR_LOG" || true)
