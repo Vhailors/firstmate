@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { previewInstruction } from '../src/domain.ts'
+import { fleetNeutralEnv } from './fleet-env.ts'
 import type { FleetSnapshot, InstructionPreview } from '../src/model.ts'
 
 const execFileAsync = promisify(execFile)
@@ -69,7 +70,7 @@ export class InstructionController {
     this.execute = options.execute ?? (async (target, instruction) => {
       await execFileAsync(join(options.repoRoot, 'bin', 'fm-send.sh'), [target, instruction], {
         cwd: options.repoRoot,
-        env: { ...process.env, FM_HOME: options.fmHome, FM_ROOT_OVERRIDE: options.repoRoot },
+        env: { ...fleetNeutralEnv(process.env), FM_HOME: options.fmHome, FM_ROOT_OVERRIDE: options.repoRoot },
         encoding: 'utf8',
         timeout: 30_000,
         maxBuffer: 256 * 1024,

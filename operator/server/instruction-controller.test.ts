@@ -34,6 +34,10 @@ async function fakeSendRepo(script: string) {
       "  printf 'cwd=%s\\n' \"$(pwd -P)\"",
       "  printf 'fm_home=%s\\n' \"${FM_HOME:-}\"",
       "  printf 'fm_root=%s\\n' \"${FM_ROOT_OVERRIDE:-}\"",
+      "  printf 'gate_bypass=%s\\n' \"${FM_GATE_REFUSE_BYPASS:-<unset>}\"",
+      "  printf 'existing_corr=%s\\n' \"${FM_PENDING_REPLY_EXISTING_CORR:-<unset>}\"",
+      "  printf 'state_override=%s\\n' \"${FM_STATE_OVERRIDE:-<unset>}\"",
+      "  printf 'path_present=%s\\n' \"$([ -n \"${PATH:-}\" ] && printf yes || printf no)\"",
       `} > '${record}'`,
       script,
       '',
@@ -124,7 +128,39 @@ describe('fm-send script boundary', () => {
       cwd: repoRoot,
       fm_home: fmHome,
       fm_root: repoRoot,
+      gate_bypass: '<unset>',
+      existing_corr: '<unset>',
+      state_override: '<unset>',
+      path_present: 'yes',
     })
+  })
+
+  it('never leaks the server process fleet environment into a browser-initiated send', async () => {
+    vi.stubEnv('FM_GATE_REFUSE_BYPASS', '1')
+    vi.stubEnv('FM_PENDING_REPLY_EXISTING_CORR', 'corr-from-another-turn')
+    vi.stubEnv('FM_STATE_OVERRIDE', '/somewhere/else/state')
+    try {
+      const { repoRoot, fmHome, record } = await fakeSendRepo('exit 0')
+      const controller = new InstructionController({
+        repoRoot,
+        fmHome,
+        readSnapshot: async () => fixtureSnapshot,
+        createId: () => 'preview-env',
+      })
+
+      await controller.preview(WORKER_ID, 'Continue the lane.')
+      await expect(controller.confirm('preview-env')).resolves.toMatchObject({ status: 'accepted' })
+
+      const recorded = await readRecord(record)
+      expect(recorded.gate_bypass).toBe('<unset>')
+      expect(recorded.existing_corr).toBe('<unset>')
+      expect(recorded.state_override).toBe('<unset>')
+      expect(recorded.fm_home).toBe(fmHome)
+      expect(recorded.fm_root).toBe(repoRoot)
+      expect(recorded.path_present).toBe('yes')
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('refuses generically to the browser while logging the fm-send exit detail', async () => {

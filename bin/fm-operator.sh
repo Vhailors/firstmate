@@ -147,14 +147,8 @@ operator_runtime_matches() {
 # record whose pid identity still resolves is never discarded without stopping
 # the process it names, otherwise a port or root change orphans a live server
 # that no later stop can reclaim.
-operator_terminate_recorded() {
-  local pid expected current attempt
-  pid=$(operator_record_value "$RUNTIME_FILE" pid)
-  expected=$(operator_record_value "$RUNTIME_FILE" pid_identity)
-  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
-  [ -n "$expected" ] || return 0
-  current=$(fm_pid_identity "$pid" 2>/dev/null) || return 0
-  [ "$current" = "$expected" ] || return 0
+operator_terminate_pid() { # <pid>
+  local pid=$1 attempt
   kill -TERM "$pid" 2>/dev/null || true
   attempt=0
   while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 50 ]; do
@@ -162,21 +156,33 @@ operator_terminate_recorded() {
     attempt=$((attempt + 1))
   done
   if kill -0 "$pid" 2>/dev/null; then
-    echo "fm-operator: recorded operator process $pid did not stop after SIGTERM" >&2
+    echo "fm-operator: operator process $pid did not stop after SIGTERM" >&2
     return 1
   fi
+  wait "$pid" 2>/dev/null || true
+}
+
+operator_terminate_recorded() {
+  local pid expected current
+  pid=$(operator_record_value "$RUNTIME_FILE" pid)
+  expected=$(operator_record_value "$RUNTIME_FILE" pid_identity)
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  [ -n "$expected" ] || return 0
+  current=$(fm_pid_identity "$pid" 2>/dev/null) || return 0
+  [ "$current" = "$expected" ] || return 0
+  operator_terminate_pid "$pid"
 }
 
 operator_port_open() { # <port>
   ( exec 3<>"/dev/tcp/127.0.0.1/$1" ) >/dev/null 2>&1
 }
 
-# The operator's own unauthenticated /api refusal is the readiness contract
-# between this launcher and operator/server/vite-plugin.ts: only a preview
-# server that loaded operator/vite.config.ts answers it, so an unrelated
-# process listening on the same loopback port is never mistaken for this home's
-# operator.
-OPERATOR_READY_MARKER='A valid operator session token is required.'
+# The response header that operator/server/vite-plugin.ts stamps on every
+# bounded API response is the readiness contract between this launcher and the
+# server; operator/server/vite-plugin.test.ts pins its wire form. Only a preview
+# server that loaded operator/vite.config.ts emits it, so an unrelated process
+# listening on the same loopback port is never mistaken for this home's operator.
+OPERATOR_READY_MARKER='x-firstmate-operator: bounded-api'
 
 operator_http_ready() { # <port>
   local port=$1 response
@@ -190,7 +196,7 @@ operator_http_ready() { # <port>
     done
     exit 0
   ) || return 1
-  case "$response" in
+  case "$(printf '%s' "$response" | tr '[:upper:]' '[:lower:]')" in
     *"$OPERATOR_READY_MARKER"*) return 0 ;;
   esac
   return 1
@@ -208,7 +214,13 @@ operator_build_ready() { # <vite-bin>
   if [ -f "$OPERATOR_DIR/dist/index.html" ]; then
     return 0
   fi
-  echo "fm-operator: building the operator bundle in $OPERATOR_DIR" >&2
+  # The captured session-start hook only prints this section once the build has
+  # finished, so the controlling terminal gets the progress line up front.
+  {
+    printf 'OPERATOR: building the operator bundle in %s; this first run can take a minute\n' \
+      "$OPERATOR_DIR" > /dev/tty
+  } 2>/dev/null || true
+  echo "OPERATOR: building the operator bundle in $OPERATOR_DIR; this first run can take a minute" >&2
   ( cd "$OPERATOR_DIR" && "$vite_bin" build ) >> "$LOG_FILE" 2>&1 || {
     echo "fm-operator: operator build failed; inspect $LOG_FILE" >&2
     return 1
@@ -264,8 +276,7 @@ operator_start() {
     }
     attempt=$((attempt + 1))
     if [ "$attempt" -ge 150 ]; then
-      kill -TERM "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
+      operator_terminate_pid "$pid" || true
       echo "fm-operator: live server never served the operator API on port $port; inspect $LOG_FILE" >&2
       return 1
     fi
@@ -277,8 +288,7 @@ operator_start() {
     return 1
   }
   pid_identity=$(fm_pid_identity "$pid" 2>/dev/null) || {
-    kill -TERM "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
+    operator_terminate_pid "$pid" || true
     echo "fm-operator: live server identity could not be recorded" >&2
     return 1
   }

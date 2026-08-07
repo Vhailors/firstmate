@@ -21,7 +21,8 @@ FM_HOME=/absolute/path/to/firstmate-home bin/fm-operator.sh start
 The launcher creates `config/operator-token` inside that home with mode `0600`, or reuses the existing token when its recorded canonical home still matches.
 It stores the runtime record and log under the same home's gitignored `state/` directory.
 It serves the production build with `vite preview`, building `operator/dist` first when that bundle is missing, and refuses when another process already holds the chosen loopback port.
-Success is reported only after the launched server answers the operator API's own unauthenticated refusal on that port, so a foreign listener is never mistaken for this home's operator.
+Success is reported only after the launched server answers on that port with the bounded API's own `X-Firstmate-Operator` response marker, so a foreign listener is never mistaken for this home's operator.
+On the first start the bundle is built inline and the controlling terminal gets a progress line before that build begins.
 The development server with hot module replacement is never used for a session or an autostart.
 
 Open a private browser session with the generated URL:

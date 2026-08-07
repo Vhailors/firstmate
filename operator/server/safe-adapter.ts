@@ -3,6 +3,7 @@ import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { redactSecrets } from '../src/domain.ts'
+import { fleetNeutralEnv } from './fleet-env.ts'
 import type {
   Decision,
   DocumentRecord,
@@ -265,7 +266,7 @@ export class SafeFirstmateAdapter {
     const executable = join(this.repoRoot, 'bin', 'fm-fleet-snapshot.sh')
     const { stdout } = await execFileAsync(executable, ['--json'], {
       cwd: this.repoRoot,
-      env: { ...process.env, FM_HOME: this.fmHome, FM_ROOT_OVERRIDE: this.repoRoot },
+      env: { ...fleetNeutralEnv(process.env), FM_HOME: this.fmHome, FM_ROOT_OVERRIDE: this.repoRoot },
       encoding: 'utf8',
       timeout: 20_000,
       maxBuffer: MAX_SNAPSHOT_BYTES,

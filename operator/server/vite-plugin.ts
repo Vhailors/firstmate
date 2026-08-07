@@ -8,6 +8,12 @@ import { SafeFirstmateAdapter } from './safe-adapter.ts'
 
 const MAX_REQUEST_BYTES = 16 * 1024
 
+// bin/fm-operator.sh probes this header to prove the loopback port belongs to
+// this home's operator and not to an unrelated listener. Its wire form is a
+// contract; operator/server/vite-plugin.test.ts pins it.
+export const OPERATOR_API_MARKER_HEADER = 'X-Firstmate-Operator'
+export const OPERATOR_API_MARKER_VALUE = 'bounded-api'
+
 export function operatorTokenMatches(candidate: string, expected: string) {
   if (!candidate || !expected) return false
   const left = Buffer.from(candidate)
@@ -23,6 +29,7 @@ function bearer(request: IncomingMessage) {
 function json(response: ServerResponse, status: number, body: unknown) {
   response.statusCode = status
   response.setHeader('Content-Type', 'application/json; charset=utf-8')
+  response.setHeader(OPERATOR_API_MARKER_HEADER, OPERATOR_API_MARKER_VALUE)
   response.setHeader('Cache-Control', 'no-store')
   response.setHeader('X-Content-Type-Options', 'nosniff')
   response.setHeader('Content-Security-Policy', "default-src 'self'; frame-ancestors 'none'")

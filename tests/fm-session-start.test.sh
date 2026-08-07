@@ -1040,7 +1040,7 @@ done
 printf 'home=%s root=%s token_file=%s cwd=%s args=%s\n' \\
   "\$FM_HOME" "\$FM_ROOT_OVERRIDE" "\$FM_OPERATOR_TOKEN_FILE" "\$(pwd -P)" "\$*" >> "\$FM_OPERATOR_FAKE_LOG"
 exec '$real_node' \\
-  -e 'require("node:http").createServer((_q, r) => { r.writeHead(401, { "Content-Type": "application/json" }); r.end(JSON.stringify({ error: "A valid operator session token is required." })) }).listen(Number(process.argv[1]), "127.0.0.1")' \\
+  -e 'require("node:http").createServer((_q, r) => { r.writeHead(401, { "Content-Type": "application/json", "X-Firstmate-Operator": "bounded-api" }); r.end(JSON.stringify({ error: "A valid operator session token is required." })) }).listen(Number(process.argv[1]), "127.0.0.1")' \\
   "\$port"
 SH
   chmod +x "$fakebin/operator-vite"
@@ -1078,6 +1078,35 @@ EOF
   [ "$boot_line" -lt "$operator_line" ] && [ "$operator_line" -lt "$wake_line" ] \
     || fail "operator ensure did not run between bootstrap and wake drain"
   pass "locked primary session start ensures the home-bound live operator after bootstrap"
+}
+
+# A malformed secondmate marker is not a secondmate home for any other tracked
+# hook, so the operator gate must reach the same verdict through the shared
+# predicate instead of a bare file test.
+test_operator_ensure_treats_a_malformed_secondmate_marker_as_primary() {
+  local rec root home fakebin out log pkg port
+  rec=$(new_world operator-empty-marker)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  rm -f "$home/config/operator-autostart"
+  : > "$home/.fm-secondmate-home"
+  pkg="$TMP_ROOT/operator-empty-marker/package"
+  make_fake_operator_package "$fakebin" "$pkg"
+  log="$home/operator-vite.log"
+  port=$((40000 + $$ % 20000 + 2))
+
+  out=$(FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
+    FM_OPERATOR_DIR="$pkg" FM_OPERATOR_PORT="$port" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_OPERATOR_PORT="$port" \
+    "$ROOT/bin/fm-operator.sh" stop >/dev/null 2>&1 || true
+
+  assert_contains "$out" "OPERATOR: live at http://127.0.0.1:$port for $home" \
+    "an empty secondmate marker silently skipped the operator ensure"
+  pass "session start treats an empty secondmate marker as a primary home for the operator gate"
 }
 
 # The documented default is an unset FM_HOME resolving to the code root, so the
@@ -2320,6 +2349,7 @@ test_session_lock_concurrent_single_winner
 test_output_ordering_diagnostics_lead
 test_read_once_contract_is_stated_once_before_its_subject
 test_locked_primary_ensures_live_operator_after_bootstrap
+test_operator_ensure_treats_a_malformed_secondmate_marker_as_primary
 test_operator_ensure_passes_the_default_home_to_its_child
 test_herdr_backend_diagnostics_follow_real_session_start
 test_session_start_relaunches_missing_pi_secondmate

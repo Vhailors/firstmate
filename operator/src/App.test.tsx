@@ -110,9 +110,13 @@ describe('operator UI core flows', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('fm-send refused or could not confirm')
     expect(screen.queryByLabelText('Instruction delivery result')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Send instruction' })).toBeDisabled()
-    await user.click(screen.getByRole('switch', { name: 'I reviewed the exact target and instruction' }))
-    expect(screen.getByRole('button', { name: 'Send instruction' })).toBeDisabled()
+    expect(screen.queryByLabelText('Instruction confirmation preview')).not.toBeInTheDocument()
+    expect(screen.queryByText('No send performed')).not.toBeInTheDocument()
+    expect(screen.queryByText(/No send performed\. Confirmation re-resolves/)).not.toBeInTheDocument()
+    const unknown = screen.getByLabelText('Instruction outcome unknown')
+    expect(within(unknown).getByText(/already been submitted to the worker/)).toBeInTheDocument()
+    expect(within(unknown).getByText('state/operator.log')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Send instruction' })).not.toBeInTheDocument()
     expect(confirmInstruction).toHaveBeenCalledOnce()
   })
 

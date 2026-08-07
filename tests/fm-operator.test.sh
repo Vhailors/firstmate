@@ -49,7 +49,7 @@ done
 printf 'home=%s root=%s token_file=%s cwd=%s args=%s\n' \
   "$FM_HOME" "$FM_ROOT_OVERRIDE" "$FM_OPERATOR_TOKEN_FILE" "$(pwd -P)" "$*" >> "$FM_OPERATOR_FAKE_LOG"
 exec "$FM_OPERATOR_FAKE_NODE" \
-  -e 'require("node:http").createServer((_q, r) => { r.writeHead(401, { "Content-Type": "application/json" }); r.end(JSON.stringify({ error: "A valid operator session token is required." })) }).listen(Number(process.argv[1]), "127.0.0.1")' \
+  -e 'require("node:http").createServer((_q, r) => { r.writeHead(401, { "Content-Type": "application/json", "X-Firstmate-Operator": "bounded-api" }); r.end(JSON.stringify({ error: "A valid operator session token is required." })) }).listen(Number(process.argv[1]), "127.0.0.1")' \
   "$port"
 SH
 chmod +x "$TMP_ROOT/fake-vite"

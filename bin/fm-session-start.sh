@@ -295,6 +295,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
+# shellcheck source=bin/fm-primary-scope-lib.sh
+. "$SCRIPT_DIR/fm-primary-scope-lib.sh"
 
 # One tasks-axi compatibility verdict per session start. The probe costs three
 # tasks-axi subprocesses and this digest needs the same answer twice - here for
@@ -591,7 +593,7 @@ fi
 # A successful primary-home start ensures the live operator after bootstrap.
 # The owner script keeps lifecycle, home binding, token creation, loopback bind,
 # and opt-in fixture behavior out of this ordered digest composer.
-if [ "$READ_ONLY" -eq 0 ] && [ ! -f "$FM_HOME/.fm-secondmate-home" ]; then
+if [ "$READ_ONLY" -eq 0 ] && ! fm_root_is_secondmate_home "$FM_HOME"; then
   OPERATOR_AUTOSTART=on
   if [ -f "$CONFIG/operator-autostart" ] && [ ! -L "$CONFIG/operator-autostart" ]; then
     OPERATOR_AUTOSTART=$(sed -n '1p' "$CONFIG/operator-autostart")

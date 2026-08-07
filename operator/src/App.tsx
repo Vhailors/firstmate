@@ -204,22 +204,29 @@ function ObserveView({
   const [confirmed, setConfirmed] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [delivery, setDelivery] = useState<InstructionDelivery | null>(null)
+  const [unconfirmed, setUnconfirmed] = useState(false)
   const worker = snapshot.workers.find((candidate) => candidate.id === workerId)
+
+  function resetOutcome() { setPreview(null); setPreviewId(''); setConfirmed(false); setDelivery(null); setUnconfirmed(false) }
 
   async function review() {
     try {
       const envelope = snapshot.provenance.mode === 'fixture'
         ? { previewId: '', expiresAt: '', preview: previewInstruction(snapshot, workerId, instruction) }
         : await requestPreview(workerId, instruction)
-      setPreview(envelope.preview); setPreviewId(envelope.previewId); setError(''); setConfirmed(false); setDelivery(null)
-    } catch (reason) { setPreview(null); setPreviewId(''); setError(reason instanceof Error ? reason.message : 'Instruction could not be prepared.') }
+      resetOutcome(); setPreview(envelope.preview); setPreviewId(envelope.previewId); setError('')
+    } catch (reason) { resetOutcome(); setError(reason instanceof Error ? reason.message : 'Instruction could not be prepared.') }
   }
 
+  // A non-zero fm-send exit does not mean nothing was delivered: fm-send refuses
+  // with the text already submitted when its pending-reply commit fails. The
+  // consumed preview is torn down so no confirmation surface can claim the send
+  // never happened and no resend is possible without a fresh preview.
   async function send() {
     if (!previewId) return
     setSubmitting(true); setError('')
-    try { setDelivery(await confirm(previewId)); setPreview(null); setPreviewId(''); setConfirmed(false) }
-    catch (reason) { setPreviewId(''); setConfirmed(false); setError(reason instanceof Error ? reason.message : 'Instruction could not be sent.') }
+    try { const accepted = await confirm(previewId); resetOutcome(); setDelivery(accepted) }
+    catch (reason) { resetOutcome(); setUnconfirmed(true); setError(reason instanceof Error ? reason.message : 'Instruction could not be sent.') }
     finally { setSubmitting(false) }
   }
 
@@ -227,13 +234,13 @@ function ObserveView({
     <SectionHeading title="Observe, then steer" summary="Resolve an exact recorded worker or visible pane before composing any instruction." />
     <div className="observation-layout">
       <section className="content-section">
-        <Field label="Recorded worker"><select aria-label="Recorded worker" value={workerId} onChange={(event) => { setWorkerId(event.target.value); setPreview(null); setPreviewId(''); setDelivery(null) }}>{snapshot.workers.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}</select></Field>
+        <Field label="Recorded worker"><select aria-label="Recorded worker" value={workerId} onChange={(event) => { setWorkerId(event.target.value); resetOutcome() }}>{snapshot.workers.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}</select></Field>
         {worker && <div className="identity-card"><div className="title-row"><h2>{worker.title}</h2><StateMark state={worker.state} /></div><dl>
           <div><dt>Durable id</dt><dd><code>{worker.id}</code></dd></div><div><dt>Backend</dt><dd>{worker.backend}</dd></div><div><dt>Endpoint</dt><dd><code>{worker.endpoint ?? 'unavailable'}</code></dd></div><div><dt>State source</dt><dd>{worker.stateSource}</dd></div>
         </dl>{worker.remote?.host === 'fm-thinkpad' && worker.remote.visibility !== 'visible-herdr' && <div className="refusal"><CloudDismiss24Regular /><div><strong>Visible remote unavailable</strong><p>No fallback to fm-remote, hidden SSH, or a detached terminal is permitted.</p></div></div>}</div>}
       </section>
       <section className="form-surface">
-        <Field label="Instruction" hint="The existing fm-send composer, busy, and submit guards remain authoritative."><Textarea resize="vertical" value={instruction} onChange={(_, data) => { setInstruction(data.value); setPreview(null); setPreviewId(''); setConfirmed(false); setDelivery(null) }} /></Field>
+        <Field label="Instruction" hint="The existing fm-send composer, busy, and submit guards remain authoritative."><Textarea resize="vertical" value={instruction} onChange={(_, data) => { setInstruction(data.value); resetOutcome() }} /></Field>
         {error && <p className="form-error" role="alert">{error}</p>}
         <Button appearance="primary" icon={<Send24Regular />} onClick={() => void review()}>Prepare instruction</Button>
       </section>
@@ -249,6 +256,10 @@ function ObserveView({
     {delivery && <section className="review-surface" aria-label="Instruction delivery result">
       <div className="title-row"><h2>Instruction sent</h2><Badge appearance="filled" color="success">Send performed</Badge></div>
       <p className="success-note" role="status">Instruction accepted by {delivery.owner} for {delivery.durableId}.</p>
+    </section>}
+    {unconfirmed && <section className="review-surface" aria-label="Instruction outcome unknown">
+      <div className="title-row"><h2>Delivery outcome unknown</h2><Badge appearance="filled" color="warning">May already be delivered</Badge></div>
+      <p>fm-send did not confirm this instruction, and several of its refusals happen after the text has already been submitted to the worker. Read <code>state/operator.log</code> for the exact fm-send exit status and check the worker before preparing anything new. Do not resend on the assumption that nothing arrived.</p>
     </section>}
   </div>
 }
