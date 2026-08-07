@@ -14,13 +14,15 @@ afterAll(async () => { await Promise.all(started.map((close) => close())) })
 
 // Mounts the plugin's real /api middleware on a real loopback server, which is
 // the exact surface bin/fm-operator.sh probes for readiness.
-async function startBoundedApi() {
+async function startBoundedApi(options: { withToken?: boolean } = {}) {
   const home = await realpath(await mkdtemp(join(tmpdir(), 'fm-operator-api-home-')))
   const repoRoot = await realpath(await mkdtemp(join(tmpdir(), 'fm-operator-api-repo-')))
   await mkdir(join(home, 'config'), { recursive: true })
   const tokenFile = join(home, 'config', 'operator-token')
   const token = randomBytes(32).toString('hex')
-  await writeFile(tokenFile, `fm_home=${home}\ntoken=${token}\n`, { mode: 0o600 })
+  if (options.withToken !== false) {
+    await writeFile(tokenFile, `fm_home=${home}\ntoken=${token}\n`, { mode: 0o600 })
+  }
 
   let handler: ((request: IncomingMessage, response: ServerResponse) => void) | undefined
   const plugin = operatorApiPlugin({ FM_HOME: home, FM_ROOT_OVERRIDE: repoRoot, FM_OPERATOR_TOKEN_FILE: tokenFile })
@@ -36,7 +38,7 @@ async function startBoundedApi() {
     await rm(home, { recursive: true, force: true })
     await rm(repoRoot, { recursive: true, force: true })
   })
-  return { port: (server.address() as AddressInfo).port, token }
+  return { port: (server.address() as AddressInfo).port, token, home, tokenFile }
 }
 
 describe('operator API authorization', () => {
@@ -55,6 +57,17 @@ describe('bounded API readiness contract', () => {
     expect(refused.status).toBe(401)
     expect(refused.headers.get('x-firstmate-operator')).toBe('bounded-api')
     expect(await refused.json()).toEqual({ error: 'A valid operator session token is required.' })
+  })
+
+  it('keeps the credential bootstrap failure opaque to an unauthenticated caller', async () => {
+    const { port, home, tokenFile } = await startBoundedApi({ withToken: false })
+    const refused = await fetch(`http://127.0.0.1:${port}/fleet`)
+    expect(refused.status).toBe(503)
+    const body = await refused.text()
+    expect(body).toBe(JSON.stringify({ error: 'The operator session credential is unavailable.' }))
+    expect(body).not.toContain(home)
+    expect(body).not.toContain(tokenFile)
+    expect(body).not.toContain('ENOENT')
   })
 
   it('marks an authenticated bounded refusal with the same header', async () => {

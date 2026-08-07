@@ -146,3 +146,9 @@ export type InstructionDelivery = {
   durableId: string
   owner: 'bin/fm-send.sh'
 }
+
+// What a refused mutation proves about the worker. 'no' is only claimed when the
+// refusal was raised before bin/fm-send.sh was executed; everything else stays
+// 'unknown', because fm-send also refuses in states where the text was already
+// submitted.
+export type InstructionDeliveryOutcome = 'no' | 'unknown'

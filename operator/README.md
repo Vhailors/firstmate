@@ -36,7 +36,7 @@ Do not publish that URL.
 
 `bin/fm-session-start.sh` runs `fm-operator.sh ensure` after lock acquisition and bootstrap on an ordinary primary home.
 A lock-refused session and a marked secondmate home never start it.
-Write `off` to `config/operator-autostart` when a primary home should skip the hook; `config/operator-port` or `FM_OPERATOR_PORT` selects a fixed loopback port.
+Write `off` to `config/operator-autostart` when a primary home should skip the hook, or set `FM_OPERATOR_AUTOSTART=off` to decline it for one invocation; `config/operator-port` or `FM_OPERATOR_PORT` selects a fixed loopback port.
 [`docs/configuration.md`](../docs/configuration.md#operator-runtime-configoperator-autostart--configoperator-port--configoperator-token) owns the file schemas and runtime-state locations.
 
 ## Direct package commands

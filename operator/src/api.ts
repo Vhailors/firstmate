@@ -1,5 +1,27 @@
 import { fixtureSnapshot } from './fixture'
-import type { FleetSnapshot, InstructionDelivery, InstructionPreviewEnvelope } from './model'
+import type {
+  FleetSnapshot,
+  InstructionDelivery,
+  InstructionDeliveryOutcome,
+  InstructionPreviewEnvelope,
+} from './model'
+
+// A refusal only proves nothing was sent when the server says so. An absent or
+// unrecognized outcome - a transport error, a response the API never shaped -
+// stays 'unknown' so the UI never invites a duplicate live send.
+export class OperatorApiError extends Error {
+  readonly delivered: InstructionDeliveryOutcome
+
+  constructor(message: string, delivered: InstructionDeliveryOutcome = 'unknown') {
+    super(message)
+    this.delivered = delivered
+  }
+}
+
+function reportedOutcome(body: unknown): InstructionDeliveryOutcome {
+  if (typeof body !== 'object' || body === null || !('delivered' in body)) return 'unknown'
+  return (body as { delivered: unknown }).delivered === 'no' ? 'no' : 'unknown'
+}
 
 function sessionToken() {
   const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''))
@@ -26,7 +48,12 @@ async function api<T>(path: string, init: RequestInit = {}) {
     && typeof (body as { error: unknown }).error === 'string'
     ? (body as { error: string }).error
     : ''
-  if (!response.ok) throw new Error(reported || `Operator API responded with HTTP ${response.status}.`)
+  if (!response.ok) {
+    throw new OperatorApiError(
+      reported || `Operator API responded with HTTP ${response.status}.`,
+      reportedOutcome(body),
+    )
+  }
   return body as T
 }
 

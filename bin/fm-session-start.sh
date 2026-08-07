@@ -593,12 +593,16 @@ fi
 # A successful primary-home start ensures the live operator after bootstrap.
 # The owner script keeps lifecycle, home binding, token creation, loopback bind,
 # and opt-in fixture behavior out of this ordered digest composer.
+# FM_OPERATOR_AUTOSTART overrides the home-local file so a caller that drives
+# this digest without a writable config - an integration harness, a probe - can
+# decline the long-lived server without owning the home.
 if [ "$READ_ONLY" -eq 0 ] && ! fm_root_is_secondmate_home "$FM_HOME"; then
-  OPERATOR_AUTOSTART=on
-  if [ -f "$CONFIG/operator-autostart" ] && [ ! -L "$CONFIG/operator-autostart" ]; then
+  OPERATOR_AUTOSTART=${FM_OPERATOR_AUTOSTART:-}
+  if [ -z "$OPERATOR_AUTOSTART" ] \
+    && [ -f "$CONFIG/operator-autostart" ] && [ ! -L "$CONFIG/operator-autostart" ]; then
     OPERATOR_AUTOSTART=$(sed -n '1p' "$CONFIG/operator-autostart")
   fi
-  if [ "$OPERATOR_AUTOSTART" != off ]; then
+  if [ "${OPERATOR_AUTOSTART:-on}" != off ]; then
     subsection "OPERATOR"
     if OPERATOR_OUT=$(FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
       "$SCRIPT_DIR/fm-operator.sh" ensure 2>&1); then

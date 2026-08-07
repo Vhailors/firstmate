@@ -34,6 +34,12 @@ FM_TEST_LIB_SOURCED=1
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# Any suite that drives the real bin/fm-session-start.sh on a locked primary
+# home would otherwise build the operator bundle into the working tree and leave
+# a loopback server running past the temp home its runtime record lives in. The
+# operator lifecycle tests opt back in explicitly with FM_OPERATOR_AUTOSTART=on.
+export FM_OPERATOR_AUTOSTART=off
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

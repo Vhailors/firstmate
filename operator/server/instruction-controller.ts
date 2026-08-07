@@ -4,11 +4,25 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { previewInstruction } from '../src/domain.ts'
 import { fleetNeutralEnv } from './fleet-env.ts'
-import type { FleetSnapshot, InstructionPreview } from '../src/model.ts'
+import type {
+  FleetSnapshot,
+  InstructionDelivery,
+  InstructionDeliveryOutcome,
+  InstructionPreview,
+  InstructionPreviewEnvelope,
+} from '../src/model.ts'
+
+export type { InstructionPreviewEnvelope }
 
 const execFileAsync = promisify(execFile)
 const PREVIEW_LIFETIME_MS = 60_000
 const MAX_PENDING_PREVIEWS = 100
+// A remote secondmate send routes through fm-on.sh over SSH before fm-send's own
+// submit verification and settle, and execFile's timeout is a SIGTERM that
+// fm-send does not trap: killing it mid-delivery would leave a pending-reply
+// expectation neither committed nor discarded. The bound stays well above a slow
+// remote send and only exists to stop a truly wedged child.
+const SEND_TIMEOUT_MS = 180_000
 
 type PendingPreview = {
   workerId: string
@@ -17,18 +31,14 @@ type PendingPreview = {
   expiresAt: number
 }
 
-export type InstructionPreviewEnvelope = {
-  previewId: string
-  expiresAt: string
-  preview: InstructionPreview
-}
-
 export class InstructionMutationError extends Error {
   readonly status: number
+  readonly delivered: InstructionDeliveryOutcome
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, delivered: InstructionDeliveryOutcome = 'no') {
     super(message)
     this.status = status
+    this.delivered = delivered
   }
 }
 
@@ -47,11 +57,14 @@ export type InstructionControllerOptions = {
 // generic refusal, so the detail is written to the server log instead of being
 // discarded. The instruction text itself is never included.
 function describeExecuteFailure(target: string, error: unknown) {
-  const detail = error as { code?: unknown; signal?: unknown; stderr?: unknown }
+  const detail = error as { code?: unknown; signal?: unknown; stderr?: unknown; killed?: unknown }
   const code = typeof detail?.code === 'number' || typeof detail?.code === 'string' ? detail.code : 'unknown'
   const signal = typeof detail?.signal === 'string' ? detail.signal : 'none'
   const stderr = typeof detail?.stderr === 'string' ? detail.stderr.trim().slice(0, 2_000) : ''
-  return `fm-operator: fm-send delivery failed for ${target}: exit=${code} signal=${signal} stderr=${stderr || '<empty>'}`
+  const cause = detail?.killed === true
+    ? `timed out after ${SEND_TIMEOUT_MS}ms and was terminated by the operator server`
+    : 'refused'
+  return `fm-operator: fm-send delivery ${cause} for ${target}: exit=${code} signal=${signal} stderr=${stderr || '<empty>'}`
 }
 
 export class InstructionController {
@@ -72,7 +85,7 @@ export class InstructionController {
         cwd: options.repoRoot,
         env: { ...fleetNeutralEnv(process.env), FM_HOME: options.fmHome, FM_ROOT_OVERRIDE: options.repoRoot },
         encoding: 'utf8',
-        timeout: 30_000,
+        timeout: SEND_TIMEOUT_MS,
         maxBuffer: 256 * 1024,
       })
     })
@@ -100,7 +113,7 @@ export class InstructionController {
     return { previewId, expiresAt: new Date(expiresAt).toISOString(), preview }
   }
 
-  async confirm(previewId: string) {
+  async confirm(previewId: string): Promise<InstructionDelivery> {
     if (!previewId) throw new InstructionMutationError(400, 'A preview id is required.')
     const pending = this.pending.get(previewId)
     this.pending.delete(previewId)
@@ -121,7 +134,11 @@ export class InstructionController {
       await this.execute(target, current.instruction)
     } catch (error) {
       this.logDiagnostic(describeExecuteFailure(target, error))
-      throw new InstructionMutationError(409, 'fm-send refused or could not confirm the instruction delivery.')
+      throw new InstructionMutationError(
+        409,
+        'fm-send refused or could not confirm the instruction delivery.',
+        'unknown',
+      )
     }
     return {
       status: 'accepted' as const,

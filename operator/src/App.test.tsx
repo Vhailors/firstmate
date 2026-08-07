@@ -1,9 +1,19 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
+import { OperatorApiError } from './api.ts'
 import App from './App.tsx'
 import { previewInstruction } from './domain.ts'
 import { fixtureSnapshot } from './fixture.ts'
+
+const liveFixture = {
+  ...fixtureSnapshot,
+  provenance: { ...fixtureSnapshot.provenance, mode: 'live' as const, label: 'Live fleet' },
+  trust: {
+    ...fixtureSnapshot.trust,
+    capabilities: { ...fixtureSnapshot.trust.capabilities, sendInstruction: true },
+  },
+}
 
 describe('operator UI core flows', () => {
   it('renders fleet, secondmates, decisions, blockers, and provenance', () => {
@@ -79,26 +89,15 @@ describe('operator UI core flows', () => {
     expect(screen.getByLabelText('Instruction delivery result')).toBeInTheDocument()
   })
 
-  it('keeps the refusal reason and forces a fresh preview after a failed confirmation', async () => {
+  async function attemptSend(confirmInstruction: (previewId: string) => Promise<never>) {
     const user = userEvent.setup()
-    const liveSnapshot = {
-      ...fixtureSnapshot,
-      provenance: { ...fixtureSnapshot.provenance, mode: 'live' as const, label: 'Live fleet' },
-      trust: {
-        ...fixtureSnapshot.trust,
-        capabilities: { ...fixtureSnapshot.trust.capabilities, sendInstruction: true },
-      },
-    }
     const requestInstructionPreview = vi.fn(async (workerId: string, instruction: string) => ({
       previewId: 'preview-refused',
       expiresAt: '2026-08-07T10:01:00Z',
-      preview: previewInstruction(liveSnapshot, workerId, instruction),
+      preview: previewInstruction(liveFixture, workerId, instruction),
     }))
-    const confirmInstruction = vi.fn(async () => {
-      throw new Error('fm-send refused or could not confirm the instruction delivery.')
-    })
     render(<App
-      initialSnapshot={liveSnapshot}
+      initialSnapshot={liveFixture}
       requestInstructionPreview={requestInstructionPreview}
       confirmInstruction={confirmInstruction}
     />)
@@ -107,17 +106,46 @@ describe('operator UI core flows', () => {
     await user.click(screen.getByRole('button', { name: 'Prepare instruction' }))
     await user.click(screen.getByRole('switch', { name: 'I reviewed the exact target and instruction' }))
     await user.click(screen.getByRole('button', { name: 'Send instruction' }))
+  }
+
+  it('warns that delivery may have happened when fm-send itself refused', async () => {
+    const confirmInstruction = vi.fn(async () => {
+      throw new OperatorApiError('fm-send refused or could not confirm the instruction delivery.', 'unknown')
+    })
+    await attemptSend(confirmInstruction)
 
     expect(await screen.findByRole('alert')).toHaveTextContent('fm-send refused or could not confirm')
     expect(screen.queryByLabelText('Instruction delivery result')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Instruction confirmation preview')).not.toBeInTheDocument()
-    expect(screen.queryByText('No send performed')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Instruction refused before any send')).not.toBeInTheDocument()
     expect(screen.queryByText(/No send performed\. Confirmation re-resolves/)).not.toBeInTheDocument()
     const unknown = screen.getByLabelText('Instruction outcome unknown')
     expect(within(unknown).getByText(/already been submitted to the worker/)).toBeInTheDocument()
     expect(within(unknown).getByText('state/operator.log')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Send instruction' })).not.toBeInTheDocument()
     expect(confirmInstruction).toHaveBeenCalledOnce()
+  })
+
+  it('states that nothing was sent when the server refused before running fm-send', async () => {
+    const confirmInstruction = vi.fn(async () => {
+      throw new OperatorApiError('Worker identity or endpoint changed after preview. Prepare a new instruction.', 'no')
+    })
+    await attemptSend(confirmInstruction)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Worker identity or endpoint changed after preview')
+    expect(screen.queryByLabelText('Instruction outcome unknown')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Instruction delivery result')).not.toBeInTheDocument()
+    const refused = screen.getByLabelText('Instruction refused before any send')
+    expect(within(refused).getByText(/nothing reached the worker/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Send instruction' })).not.toBeInTheDocument()
+  })
+
+  it('assumes possible delivery when a confirm failure carries no outcome', async () => {
+    await attemptSend(vi.fn(async () => { throw new Error('Failed to fetch') }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to fetch')
+    expect(screen.getByLabelText('Instruction outcome unknown')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Instruction refused before any send')).not.toBeInTheDocument()
   })
 
   it('shows bounded document redaction and an unavailable write state', async () => {

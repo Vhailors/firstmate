@@ -1,11 +1,14 @@
 // @vitest-environment node
+import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { fixtureSnapshot } from '../src/fixture.ts'
 import { InstructionController } from './instruction-controller.ts'
 
+const execFileAsync = promisify(execFile)
 const WORKER_ID = 'firstmate-control-plane-ui-20260810'
 const temporaryRoots: string[] = []
 
@@ -79,7 +82,10 @@ describe('confirmed instruction mutation', () => {
     expect(readSnapshot).toHaveBeenCalledTimes(2)
     expect(execute).toHaveBeenCalledOnce()
     expect(execute).toHaveBeenCalledWith('fm-firstmate-control-plane-ui-20260810', 'Review the failing test.')
-    await expect(controller.confirm('preview-1')).rejects.toThrow('already consumed')
+    await expect(controller.confirm('preview-1')).rejects.toMatchObject({
+      status: 404,
+      delivered: 'no',
+    })
   })
 
   it('refuses execution when the durable endpoint drifts after preview', async () => {
@@ -99,7 +105,11 @@ describe('confirmed instruction mutation', () => {
     })
     await controller.preview('firstmate-control-plane-ui-20260810', 'Check identity.')
     endpoint = 'fm-lab:replacement-pane'
-    await expect(controller.confirm('preview-drift')).rejects.toThrow('endpoint changed')
+    await expect(controller.confirm('preview-drift')).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining('endpoint changed'),
+      delivered: 'no',
+    })
     expect(execute).not.toHaveBeenCalled()
   })
 })
@@ -177,15 +187,43 @@ describe('fm-send script boundary', () => {
     })
 
     await controller.preview(WORKER_ID, 'Escalate the stuck lane.')
-    await expect(controller.confirm('preview-refused')).rejects.toThrow(
-      'fm-send refused or could not confirm the instruction delivery.',
-    )
+    await expect(controller.confirm('preview-refused')).rejects.toMatchObject({
+      status: 409,
+      message: 'fm-send refused or could not confirm the instruction delivery.',
+      delivered: 'unknown',
+    })
 
     expect((await readRecord(record)).arg1).toBe(`fm-${WORKER_ID}`)
     expect(logged).toHaveLength(1)
     expect(logged[0]).toContain(`fm-${WORKER_ID}`)
     expect(logged[0]).toContain('exit=3')
     expect(logged[0]).toContain('text typed but not submitted')
+    expect(logged[0]).toContain('refused for')
     expect(logged[0]).not.toContain('Escalate the stuck lane.')
+  })
+
+  it('records a send this server killed distinctly from one fm-send refused', async () => {
+    const { repoRoot, fmHome } = await fakeSendRepo('sleep 5\nexit 0')
+    const logged: string[] = []
+    const controller = new InstructionController({
+      repoRoot,
+      fmHome,
+      readSnapshot: async () => fixtureSnapshot,
+      createId: () => 'preview-killed',
+      logDiagnostic: (message) => logged.push(message),
+      execute: async (target, instruction) => {
+        await execFileAsync(join(repoRoot, 'bin', 'fm-send.sh'), [target, instruction], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          timeout: 250,
+        })
+      },
+    })
+
+    await controller.preview(WORKER_ID, 'Take over the wedged lane.')
+    await expect(controller.confirm('preview-killed')).rejects.toMatchObject({ delivered: 'unknown' })
+    expect(logged).toHaveLength(1)
+    expect(logged[0]).toContain('terminated by the operator server')
+    expect(logged[0]).toContain('signal=SIGTERM')
   })
 })

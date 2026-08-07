@@ -28,6 +28,7 @@ Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, whil
 
 An ordinary primary home's locked session start calls [`bin/fm-operator.sh`](../bin/fm-operator.sh) after bootstrap to ensure the live loopback operator.
 A regular `config/operator-autostart` file whose first line is exactly `off` disables that ensure; absence and every other value keep the default on.
+`FM_OPERATOR_AUTOSTART` overrides that file for one invocation, so a harness driving the digest without a writable home config can still decline the long-lived server.
 Marked secondmate homes and lock-refused sessions never start the operator.
 
 `config/operator-port` may contain one loopback port from 1024 through 65535, while `FM_OPERATOR_PORT` overrides it for the current command.

@@ -32,6 +32,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   confirmInstruction as defaultConfirmInstruction,
   loadSnapshot as defaultLoader,
+  OperatorApiError,
   requestInstructionPreview as defaultRequestInstructionPreview,
 } from './api'
 import { previewInstruction, previewPlan } from './domain'
@@ -39,6 +40,7 @@ import type {
   FleetSnapshot,
   FleetState,
   InstructionDelivery,
+  InstructionDeliveryOutcome,
   InstructionPreview,
   InstructionPreviewEnvelope,
   PlanDraft,
@@ -204,10 +206,10 @@ function ObserveView({
   const [confirmed, setConfirmed] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [delivery, setDelivery] = useState<InstructionDelivery | null>(null)
-  const [unconfirmed, setUnconfirmed] = useState(false)
+  const [refusal, setRefusal] = useState<InstructionDeliveryOutcome | null>(null)
   const worker = snapshot.workers.find((candidate) => candidate.id === workerId)
 
-  function resetOutcome() { setPreview(null); setPreviewId(''); setConfirmed(false); setDelivery(null); setUnconfirmed(false) }
+  function resetOutcome() { setPreview(null); setPreviewId(''); setConfirmed(false); setDelivery(null); setRefusal(null) }
 
   async function review() {
     try {
@@ -226,7 +228,11 @@ function ObserveView({
     if (!previewId) return
     setSubmitting(true); setError('')
     try { const accepted = await confirm(previewId); resetOutcome(); setDelivery(accepted) }
-    catch (reason) { resetOutcome(); setUnconfirmed(true); setError(reason instanceof Error ? reason.message : 'Instruction could not be sent.') }
+    catch (reason) {
+      resetOutcome()
+      setRefusal(reason instanceof OperatorApiError ? reason.delivered : 'unknown')
+      setError(reason instanceof Error ? reason.message : 'Instruction could not be sent.')
+    }
     finally { setSubmitting(false) }
   }
 
@@ -257,7 +263,11 @@ function ObserveView({
       <div className="title-row"><h2>Instruction sent</h2><Badge appearance="filled" color="success">Send performed</Badge></div>
       <p className="success-note" role="status">Instruction accepted by {delivery.owner} for {delivery.durableId}.</p>
     </section>}
-    {unconfirmed && <section className="review-surface" aria-label="Instruction outcome unknown">
+    {refusal === 'no' && <section className="review-surface" aria-label="Instruction refused before any send">
+      <div className="title-row"><h2>Refused before any send</h2><Badge appearance="outline">No send performed</Badge></div>
+      <p>The server refused this confirmation before <code>bin/fm-send.sh</code> was run, so nothing reached the worker. Prepare the instruction again against current fleet state.</p>
+    </section>}
+    {refusal === 'unknown' && <section className="review-surface" aria-label="Instruction outcome unknown">
       <div className="title-row"><h2>Delivery outcome unknown</h2><Badge appearance="filled" color="warning">May already be delivered</Badge></div>
       <p>fm-send did not confirm this instruction, and several of its refusals happen after the text has already been submitted to the worker. Read <code>state/operator.log</code> for the exact fm-send exit status and check the worker before preparing anything new. Do not resend on the assumption that nothing arrived.</p>
     </section>}

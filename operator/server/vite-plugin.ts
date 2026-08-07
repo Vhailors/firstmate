@@ -52,6 +52,14 @@ async function readJson(request: IncomingMessage) {
   }
 }
 
+function describe(error: unknown) {
+  return error instanceof Error ? error.message : 'unknown error'
+}
+
+function logDiagnostic(message: string) {
+  process.stderr.write(`${message}\n`)
+}
+
 function stringField(body: Record<string, unknown>, field: string) {
   const value = body[field]
   if (typeof value !== 'string') throw new InstructionMutationError(400, `${field} must be a string.`)
@@ -74,12 +82,22 @@ export function operatorApiPlugin(environment: NodeJS.ProcessEnv = process.env):
       readSnapshot: () => adapter.read(),
     })
     server.middlewares.use('/api', async (request, response) => {
+      // Everything before the token comparison answers an unauthenticated
+      // caller, so its body stays fixed: the home path and the credential
+      // file's state belong in the server log, not in that response.
+      let expectedToken: string
       try {
-        const expectedToken = await readBoundOperatorToken(runtime.tokenFile, runtime.fmHome)
-        if (!operatorTokenMatches(bearer(request), expectedToken)) {
-          json(response, 401, { error: 'A valid operator session token is required.' })
-          return
-        }
+        expectedToken = await readBoundOperatorToken(runtime.tokenFile, runtime.fmHome)
+      } catch (error) {
+        logDiagnostic(`fm-operator: operator session credential unusable: ${describe(error)}`)
+        json(response, 503, { error: 'The operator session credential is unavailable.' })
+        return
+      }
+      if (!operatorTokenMatches(bearer(request), expectedToken)) {
+        json(response, 401, { error: 'A valid operator session token is required.' })
+        return
+      }
+      try {
         if (request.method === 'GET' && request.url === '/fleet') {
           json(response, 200, await adapter.read())
           return
@@ -96,8 +114,12 @@ export function operatorApiPlugin(environment: NodeJS.ProcessEnv = process.env):
         }
         json(response, 404, { error: 'No such bounded operator API route.' })
       } catch (error) {
-        const status = error instanceof InstructionMutationError ? error.status : 503
-        json(response, status, { error: error instanceof Error ? error.message : 'Operator API unavailable.' })
+        if (error instanceof InstructionMutationError) {
+          json(response, error.status, { error: error.message, delivered: error.delivered })
+          return
+        }
+        logDiagnostic(`fm-operator: bounded API request failed: ${describe(error)}`)
+        json(response, 503, { error: 'Operator API unavailable.' })
       }
     })
   }
