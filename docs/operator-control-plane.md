@@ -12,7 +12,7 @@ The web layer consumes stable owners instead of parsing terminal presentation or
 | --- | --- | --- |
 | Fleet, backlog, worker, report, and secondmate projection | [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh) with schema `fm-fleet-snapshot.v1` | Execute the fixed `--json` command with an explicit `FM_HOME`, validate the schema and returned home, and map the result for display. |
 | Current worker state | [`bin/fm-crew-state.sh`](../bin/fm-crew-state.sh), reached through the fleet snapshot | Display the returned state, source, freshness, and blocker without substituting a pane-tail guess. |
-| Worker and secondmate instruction delivery | [`bin/fm-send.sh`](../bin/fm-send.sh) | Resolve a durable task id, preview the exact argv, and leave composer, busy-state, marker, pending-reply, backend, and submit checks to `fm-send`. |
+| Worker and secondmate instruction delivery | [`bin/fm-send.sh`](../bin/fm-send.sh) | Resolve a durable task id, preview the exact argv, execute only that one confirmed preview, and leave composer, busy-state, marker, pending-reply, backend, and submit checks to `fm-send`. |
 | Secondmate route and scope | `data/secondmates.md` under the [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md) contract | Read a bounded registry projection and never use a project list as exclusive ownership. |
 | Herdr endpoint placement and lifecycle | [`docs/herdr-backend.md`](herdr-backend.md) and [`bin/fm-backend.sh`](../bin/fm-backend.sh) | Display recorded session, workspace, tab, and pane identity and refuse label-only targeting. |
 | Remote secondmate placement | [`docs/remote-secondmates.md`](remote-secondmates.md) | Preserve unknown and unreachable routes without local failover. |
@@ -148,7 +148,7 @@ The catalog never runs a skill merely because its row was opened, copied, or sea
 
 ### Private deployment hardening
 
-- Add a production server that serves the built assets and API from one loopback origin.
+- Replace the loopback `vite preview` host that serves the built assets and bounded API today with a server hardened for a non-loopback route.
 - Verify Tailscale Serve identity headers only from the local proxy and issue short-lived server sessions.
 - Add operator allowlists, CSRF protection, rate limits, structured audit storage, session revocation, and a visible trust-boundary panel.
 - Document an explicit, reversible Tailscale Serve activation without creating it automatically.

@@ -39,6 +39,9 @@ A lock-refused session and a marked secondmate home never start it.
 Write `off` to `config/operator-autostart` when a primary home should skip the hook, or set `FM_OPERATOR_AUTOSTART=off` to decline it for one invocation; `config/operator-port` or `FM_OPERATOR_PORT` selects a fixed loopback port.
 [`docs/configuration.md`](../docs/configuration.md#operator-runtime-configoperator-autostart--configoperator-port--configoperator-token) owns the file schemas and runtime-state locations.
 
+`FM_OPERATOR_SKILL_ROOTS` may hold a colon-separated allowlist of installed skill roots for the skill catalog.
+The server inherits it from whichever command started it and reads only bounded `SKILL.md` frontmatter from those roots.
+
 ## Direct package commands
 
 `pnpm dev` and `pnpm start` are live-only and expect the launcher to have created the home token first.

@@ -47,8 +47,8 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
   Test scripts and helpers in `tests/` are plain bash too.
   `bin/fm-lint.sh` must pass: it is the single owner of the lint definition (the shellcheck file set, config, and pinned shellcheck version), and both CI and the no-mistakes pre-push gate run it, so local and CI can never diverge.
   It pins one exact shellcheck version and refuses to run under any other; print it with `bin/fm-lint.sh --required-version` and install that build locally.
-- `operator/` is the one tracked surface that is not bash: an optional TypeScript and React package with its own pnpm toolchain.
-  [`operator/README.md`](operator/README.md) owns its install, test, lint, build, and local-run commands, and [`docs/operator-control-plane.md`](docs/operator-control-plane.md) owns its trust boundary and mutation phasing.
+- `operator/` is the one tracked surface that is not bash: a TypeScript and React package with its own pnpm toolchain, started by default from a locked primary session start.
+  [`operator/README.md`](operator/README.md) owns its install, test, lint, build, and run commands, and [`docs/operator-control-plane.md`](docs/operator-control-plane.md) owns its trust boundary and mutation protocol.
   `bin/fm-lint.sh` and `bin/fm-test-run.sh` never invoke a package manager, so the separate `operator` CI job is what runs that package's checks.
 - Harness-adapter ownership spans detection in `bin/fm-harness.sh`, launch and hook mechanics in `bin/fm-spawn.sh`, semantic busy sources and trust gates in `bin/fm-busy-lib.sh`, delivery-only rendered guards in `bin/fm-tmux-lib.sh`, cleanup in `bin/fm-teardown.sh`, and facts in `.agents/skills/harness-adapters/SKILL.md`; the `firstmate-coding-guidelines` skill owns the validation policy for checks that depend on those harnesses.
 - Changes to runtime session backends (`bin/fm-backend.sh`, `bin/backends/`, and the scripts that dispatch through them) keep current setup and limits in the relevant backend guide and active empirical evidence in [`docs/verification/runtime-backends.md`](docs/verification/runtime-backends.md).

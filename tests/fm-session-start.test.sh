@@ -1115,6 +1115,75 @@ EOF
   pass "a home-local config/operator-autostart off declines the ensure hook"
 }
 
+# A refused session never owns this home's shared mutable state, so it must not
+# take over the home's single loopback endpoint either - the session that does
+# hold the lock owns that runtime record.
+test_lock_refused_session_never_ensures_the_operator() {
+  local rec root home fakebin out log pkg port holder_pid
+  rec=$(new_world operator-lock-refused)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  rm -f "$home/config/operator-autostart"
+  pkg="$TMP_ROOT/operator-lock-refused/package"
+  make_fake_operator_package "$fakebin" "$pkg"
+  log="$home/operator-vite.log"
+  port=$((40000 + $$ % 20000 + 5))
+  : > "$log"
+
+  sleep 300 &
+  holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$home/state/.lock"
+
+  out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" BASH_ENV="${FM_TEST_BASH_ENV:-}" \
+    FM_PI_EXTENSION_ISOLATION="${FM_TEST_PI_ISOLATION:-}" \
+    FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
+    FM_OPERATOR_DIR="$pkg" FM_OPERATOR_PORT="$port" FM_OPERATOR_AUTOSTART=on \
+    "$SESSION_START")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  assert_contains "$out" "READ-ONLY SESSION" "the seeded lock holder did not force a read-only session"
+  assert_not_contains "$out" "OPERATOR" "a lock-refused session still emitted an operator section"
+  [ ! -s "$log" ] || fail "a lock-refused session still launched an operator server"
+  assert_absent "$home/state/operator-runtime" "a lock-refused session still recorded an operator runtime"
+  pass "a lock-refused session leaves the home's live operator to the lock owner"
+}
+
+# A secondmate home is driven by its parent captain, not by a browser control
+# plane of its own, so the marked home never gets the ensure hook.
+test_marked_secondmate_home_never_ensures_the_operator() {
+  local rec root home fakebin out log pkg port
+  rec=$(new_world operator-secondmate-home)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  rm -f "$home/config/operator-autostart"
+  printf '%s\n' "fmtest-sm-operator" > "$home/.fm-secondmate-home"
+  pkg="$TMP_ROOT/operator-secondmate-home/package"
+  make_fake_operator_package "$fakebin" "$pkg"
+  log="$home/operator-vite.log"
+  port=$((40000 + $$ % 20000 + 6))
+  : > "$log"
+
+  out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" BASH_ENV="${FM_TEST_BASH_ENV:-}" \
+    FM_PI_EXTENSION_ISOLATION="${FM_TEST_PI_ISOLATION:-}" \
+    FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
+    FM_OPERATOR_DIR="$pkg" FM_OPERATOR_PORT="$port" FM_OPERATOR_AUTOSTART=on \
+    "$SESSION_START")
+
+  assert_not_contains "$out" "OPERATOR" "a marked secondmate home still emitted an operator section"
+  [ ! -s "$log" ] || fail "a marked secondmate home still launched an operator server"
+  assert_absent "$home/state/operator-runtime" "a marked secondmate home still recorded an operator runtime"
+  pass "a marked secondmate home never ensures a live operator of its own"
+}
+
 # A harness that drives this digest against a home it does not own has to be able
 # to decline the long-lived server without writing that home's config.
 test_env_opt_out_declines_the_operator_ensure() {
@@ -2412,6 +2481,8 @@ test_output_ordering_diagnostics_lead
 test_read_once_contract_is_stated_once_before_its_subject
 test_locked_primary_ensures_live_operator_after_bootstrap
 test_home_local_opt_out_declines_the_operator_ensure
+test_lock_refused_session_never_ensures_the_operator
+test_marked_secondmate_home_never_ensures_the_operator
 test_env_opt_out_declines_the_operator_ensure
 test_operator_ensure_treats_a_malformed_secondmate_marker_as_primary
 test_operator_ensure_passes_the_default_home_to_its_child
