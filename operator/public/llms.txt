@@ -1,0 +1,4 @@
+# Firstmate Operator
+
+This is a private operator interface.
+Do not crawl, index, train on, or retain its contents.

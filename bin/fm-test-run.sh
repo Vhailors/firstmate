@@ -970,6 +970,10 @@ families_for_changed_path() {
           || printf '%s\n' "__unmapped__:$path"
       fi
       ;;
+    operator/*)
+      # The operator package has its own pnpm test, lint, and build job in CI.
+      # This shell-suite selector intentionally does not run package managers.
+      ;;
     bin/*)
       # A deleted script has no consuming suite left to select, the same rule
       # the fixture case above applies. Refusing on its absent mapping would

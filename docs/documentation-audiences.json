@@ -281,6 +281,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/operator-control-plane.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/remote-secondmates.md",
       "audience": "operator-current"
     },
@@ -371,6 +375,18 @@
     {
       "path": "docs/zellij-backend.md",
       "audience": "operator-current"
+    },
+    {
+      "path": "operator/README.md",
+      "audience": "maintainer-architecture"
+    },
+    {
+      "path": "operator/public/llms.txt",
+      "audience": "public-product"
+    },
+    {
+      "path": "operator/public/robots.txt",
+      "audience": "public-product"
     },
     {
       "path": "skills/stow/SKILL.md",

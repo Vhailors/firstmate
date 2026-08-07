@@ -120,6 +120,7 @@ Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup rou
 - `bin/*.sh` and `bin/backends/*.sh` must pass `shellcheck`.
 - Run `bin/fm-lint.sh` before treating a script change as done; it is the single owner of the lint definition (file set, config, and pinned shellcheck version) that CI and the no-mistakes pre-push gate both invoke, and it refuses to run under any other shellcheck version.
 - Colocate tests with the existing pattern in `tests/`, name them `<subject>.test.sh`, and extend an existing script rather than inventing a new runner.
+- The tracked `operator/` package is the one exception to these shell rules: it is TypeScript with colocated `*.test.ts` and `*.test.tsx` files and its own pnpm test, lint, and build commands, owned by `operator/README.md`; `bin/fm-lint.sh` and `bin/fm-test-run.sh` do not cover it.
 - Tests must exercise behavior through an executable or public interface and must never assert implementation-source bytes, including through parsers, regexes, snapshots, or indirect wrappers.
 - A maintainer-verification record under `docs/verification/` records active empirical facts, not assumptions or task chronology.
 - Include the date, version, exact commands run, and exact output needed to support the current guarantee.
