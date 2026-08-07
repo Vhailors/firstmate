@@ -254,7 +254,7 @@ An explicit project wins, a clear follow-up inherits its referent, and otherwise
 Proceed on one confident match while naming the project in plain language; ask one concise question when multiple or no projects plausibly match.
 
 Route by the nature of the work against each registered secondmate scope, not by a non-exclusive clone list.
-When the captain invokes `/hunt` or authorizes hunting a named bug-bounty program, load `hunt` and route the engagement only through the registered BB secondmate.
+When the captain invokes `/hunt` or authorizes hunting a named bug-bounty program, load `hunt` and route the engagement only through the registered BB secondmate with a this-session packet bind.
 Keep `local-only` work in the main home.
 Send in-scope work to the fitting secondmate unless it is blocked or the captain explicitly redirects it; do not read the secondmate's chat because marked routed replies return through its status or referenced document.
 If no secondmate scope fits, use the main home or discuss creating an appropriate persistent secondmate.
