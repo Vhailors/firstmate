@@ -122,6 +122,26 @@ secondmate_registry_field() {
   esac
 }
 
+# Resolve the Herdr session a parent-recorded remote route is pinned to. A meta
+# written before the session pin existed carries no value and resolves to
+# fm-remote, exactly as secondmate_registry_parse_line resolves a legacy
+# registry line, so a legacy background route stays readable rather than being
+# migrated onto the operator's visible session.
+secondmate_remote_route_session() { # <recorded-session>
+  case "$1" in
+    '') printf 'fm-remote\n' ;;
+    default|fm-remote) printf '%s\n' "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Control authority is the exact recorded pane inside that pinned session, never
+# the session alone.
+secondmate_remote_route_target_ok() { # <session> <target>
+  case "$2" in "$1":?*) return 0 ;; esac
+  return 1
+}
+
 secondmate_registry_path_key() {
   local path=$1 parent base
   case "$path" in /*) ;; *) return 1 ;; esac

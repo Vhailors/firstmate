@@ -280,8 +280,10 @@ remote_secondmate_teardown() {
   remote_session=$(fm_meta_get "$META" remote_herdr_session)
   remote_target=$(fm_meta_get "$META" remote_target)
   [ -n "$remote_root" ] && [ -n "$remote_home" ] || { echo "REFUSED: remote secondmate metadata is incomplete" >&2; return 1; }
-  case "$remote_session" in default|fm-remote) ;; *) echo "REFUSED: remote secondmate metadata has an invalid Herdr session" >&2; return 1 ;; esac
-  case "$remote_target" in "$remote_session":?*) ;; *) echo "REFUSED: remote secondmate metadata has no exact target in its Herdr session" >&2; return 1 ;; esac
+  remote_session=$(secondmate_remote_route_session "$remote_session") \
+    || { echo "REFUSED: remote secondmate metadata has an invalid Herdr session" >&2; return 1; }
+  secondmate_remote_route_target_ok "$remote_session" "$remote_target" \
+    || { echo "REFUSED: remote secondmate metadata has no exact target in its Herdr session" >&2; return 1; }
   secondmate_registry_line_for_id "$SECONDMATE_REG" "$ID" || { echo "REFUSED: remote secondmate route is missing or ambiguous" >&2; return 1; }
   [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ] || { echo "REFUSED: secondmate registry route is not remote" >&2; return 1; }
   route_host=$SECONDMATE_REGISTRY_HOST

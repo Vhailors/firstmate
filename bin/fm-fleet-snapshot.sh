@@ -418,7 +418,7 @@ task_json_lines() {
     projects=$(meta_value "$meta" projects)
     remote_host=$(meta_value "$meta" remote_host)
     remote_root=$(meta_value "$meta" remote_root)
-    remote_session=$(meta_value "$meta" remote_herdr_session)
+    remote_session=$(secondmate_remote_route_session "$(meta_value "$meta" remote_herdr_session)" || printf '')
     remote_home_present=null
     if [ -n "$remote_host" ]; then
       backend=$(meta_value "$meta" remote_backend)

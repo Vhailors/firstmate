@@ -75,6 +75,8 @@ fi
 . "$SCRIPT_DIR/fm-marker-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 
 FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the requested message WILL still be sent.' "$SCRIPT_DIR/fm-guard.sh" || true
 
@@ -123,7 +125,7 @@ fm_send_count_colons() {  # <string>
 }
 
 fm_send_resolve_target() {  # <raw-target>
-  local raw=$1 meta pane_meta target backend assumed colons id session hint
+  local raw=$1 meta pane_meta target backend assumed colons id session session_pin hint
 
   RESOLVED_TARGET=""
   TARGET_BACKEND=""
@@ -147,18 +149,16 @@ fm_send_resolve_target() {  # <raw-target>
       EXPECTED_LABEL="fm-$id"
       TARGET_SELECTOR=1
       TARGET_REMOTE_ID=$id
-      TARGET_REMOTE_SESSION=$(fm_meta_get "$meta" remote_herdr_session)
+      session_pin=$(fm_meta_get "$meta" remote_herdr_session)
       TARGET_REMOTE_TARGET=$(fm_meta_get "$meta" remote_target)
-      case "$TARGET_REMOTE_SESSION" in default|fm-remote) ;; *)
-        echo "error: remote metadata $meta has an invalid Herdr session pin: ${TARGET_REMOTE_SESSION:-missing}" >&2
+      if ! TARGET_REMOTE_SESSION=$(secondmate_remote_route_session "$session_pin"); then
+        echo "error: remote metadata $meta has an invalid Herdr session pin: $session_pin" >&2
         return 1
-        ;;
-      esac
-      case "$TARGET_REMOTE_TARGET" in "$TARGET_REMOTE_SESSION":?*) ;; *)
+      fi
+      if ! secondmate_remote_route_target_ok "$TARGET_REMOTE_SESSION" "$TARGET_REMOTE_TARGET"; then
         echo "error: remote metadata $meta has no exact target in Herdr session $TARGET_REMOTE_SESSION" >&2
         return 1
-        ;;
-      esac
+      fi
       RESOLUTION_TRIED="meta=$meta; placement=remote"
       return 0
     fi

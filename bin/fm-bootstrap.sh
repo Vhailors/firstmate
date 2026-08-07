@@ -515,16 +515,14 @@ secondmate_liveness_sweep() {
     if [ -n "$remote_host" ]; then
       remote_session=$(fm_meta_get "$meta" remote_herdr_session)
       remote_target=$(fm_meta_get "$meta" remote_target)
-      case "$remote_session" in default|fm-remote) ;; *)
+      if ! remote_session=$(secondmate_remote_route_session "$remote_session"); then
         echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote metadata has an invalid Herdr session pin"
         continue
-        ;;
-      esac
-      case "$remote_target" in "$remote_session":?*) ;; *)
+      fi
+      if ! secondmate_remote_route_target_ok "$remote_session" "$remote_target"; then
         echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote metadata has no exact target in session $remote_session"
         continue
-        ;;
-      esac
+      fi
       if ! secondmate_registry_line_for_id "$DATA/secondmates.md" "$id" \
         || [ "$SECONDMATE_REGISTRY_HERDR_SESSION" != "$remote_session" ]; then
         echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote metadata does not match its registered Herdr session; migrate or retire it explicitly"

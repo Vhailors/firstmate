@@ -367,7 +367,7 @@ fi
 
 spawn_remote_secondmate() {
   local id=$1 remote host root home harness positional model effort backend out rc meta tmp
-  local remote_backend remote_target remote_harness remote_herdr_session desired_session expected_target registry_lock remote_lock remote_generation
+  local remote_backend remote_target remote_harness remote_herdr_session desired_session meta_session expected_target registry_lock remote_lock remote_generation
   local remote_traceparent remote_recorded_traceparent
   local -a launch_args
   id=${POS[0]:-}
@@ -463,25 +463,28 @@ spawn_remote_secondmate() {
   meta="$STATE/$id.meta"
   expected_target=-
   if [ -e "$meta" ] || [ -L "$meta" ]; then
+    meta_session=
+    if [ -f "$meta" ] && [ ! -L "$meta" ]; then
+      meta_session=$(secondmate_remote_route_session "$(fm_meta_get "$meta" remote_herdr_session)" || printf '')
+    fi
     if [ ! -f "$meta" ] || [ -L "$meta" ] \
       || [ "$(fm_meta_get "$meta" kind)" != secondmate ] \
       || [ "$(fm_meta_get "$meta" remote_host)" != "$host" ] \
       || [ "$(fm_meta_get "$meta" remote_root)" != "$root" ] \
       || [ "$(fm_meta_get "$meta" home)" != "$home" ] \
-      || [ "$(fm_meta_get "$meta" remote_herdr_session)" != "$desired_session" ]; then
+      || [ "$meta_session" != "$desired_session" ]; then
       fm_lock_release "$registry_lock" || true
       fm_lock_release "$SPAWN_TASK_LOCK" || true
       echo "error: existing metadata for $id does not identify this remote secondmate route" >&2
       return 1
     fi
     expected_target=$(fm_meta_get "$meta" remote_target)
-    case "$expected_target" in "$desired_session":?*) ;; *)
+    if ! secondmate_remote_route_target_ok "$desired_session" "$expected_target"; then
       fm_lock_release "$registry_lock" || true
       fm_lock_release "$SPAWN_TASK_LOCK" || true
       echo "error: existing metadata for $id has no exact target in Herdr session $desired_session" >&2
       return 1
-      ;;
-    esac
+    fi
   fi
   # Gate the host before anything is published or transferred, so a host that
   # cannot hold a durable Herdr endpoint refuses here rather than half-way

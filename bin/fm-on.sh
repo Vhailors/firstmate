@@ -106,7 +106,8 @@ if [ "$HOST" = fm-thinkpad ]; then
     [ -n "$TAILSCALE_BIN" ] && [ -x "$TAILSCALE_BIN" ] \
       || die "Tailscale CLI is unavailable; install or start Tailscale on the primary before using fm-thinkpad"
   fi
-  if ! "$TAILSCALE_BIN" ping --c 1 --timeout 5s "$HOST" >/dev/null 2>&1; then
+  if ! TAILSCALE_OUT=$("$TAILSCALE_BIN" ping -c 1 --timeout 5s "$HOST" 2>&1); then
+    [ -z "$TAILSCALE_OUT" ] || printf '%s\n' "$TAILSCALE_OUT" >&2
     die "Tailscale peer fm-thinkpad is unreachable; bring the laptop and Tailscale online, then verify 'tailscale ping fm-thinkpad'"
   fi
 fi

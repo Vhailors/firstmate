@@ -474,7 +474,7 @@ TAILSCALE_LOG="$TMP_ROOT/tailscale.log"
 : > "$SSH_COUNT"
 FM_TAILSCALE_BIN="$FAKEBIN/fake-tailscale" FM_FAKE_TAILSCALE_LOG="$TAILSCALE_LOG" \
   fm_on ios fm-probe-two.sh >/dev/null
-assert_grep 'ping --c 1 --timeout 5s fm-thinkpad' "$TAILSCALE_LOG" \
+assert_grep 'ping -c 1 --timeout 5s fm-thinkpad' "$TAILSCALE_LOG" \
   "fm-thinkpad did not pass a bounded Tailscale reachability probe"
 [ "$(cat "$SSH_COUNT")" -eq 1 ] || fail "a reachable fm-thinkpad route did not continue to SSH"
 

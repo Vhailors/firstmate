@@ -136,6 +136,7 @@ The seed records `host:`, `root:`, `home:`, and `herdr-session:` in `data/second
 For a new `fm-thinkpad` route, an omitted session option selects the visible `default` session.
 Every other new remote route must explicitly select `visible-default` or `fm-remote`.
 Legacy records without `herdr-session:` remain readable as `fm-remote` and are never silently migrated.
+A parent route meta written before `remote_herdr_session=` existed resolves its session the same way, and its recorded `remote_target` must still name a pane inside that resolved session before any control call is made.
 Readiness starts with a read-only check; when that check reports a gap, it runs `--fix` and then a second read-only check whose verdict decides, so the operator never has to run the repair by hand and a repair is never trusted on its own word.
 A host that stays red prints the doctor's remaining gaps and their operator steps, restores the registry, and creates nothing on the remote host.
 It does not copy project trees or the primary process environment.
