@@ -59,6 +59,16 @@ describe('operator UI core flows', () => {
     expect(screen.getByText('Not directly invocable')).toBeInTheDocument()
   })
 
+  it('keeps app paint classes off the body-level portal mount node', () => {
+    render(<App initialSnapshot={fixtureSnapshot} />)
+    const portal = document.querySelector('[data-portal-node]')
+    expect(portal).not.toBeNull()
+    // Fluent copies the provider root class list onto this absolutely positioned, z-index 1000000 node.
+    // If `app-provider` lands there its background and 100dvh cover the viewport and swallow every click.
+    expect(portal).not.toHaveClass('app-provider')
+    expect(document.querySelector('.app-provider')).not.toHaveClass('fui-FluentProvider')
+  })
+
   it('renders loading and unavailable states', async () => {
     let resolveSnapshot: (value: typeof fixtureSnapshot) => void = () => undefined
     const load = () => new Promise<typeof fixtureSnapshot>((resolve) => { resolveSnapshot = resolve })

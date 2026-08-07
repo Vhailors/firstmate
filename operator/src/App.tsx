@@ -321,8 +321,10 @@ export default function App({ initialSnapshot, loadSnapshot = defaultLoader }: A
     access: <AccessView snapshot={snapshot} />,
   } satisfies Record<View, React.ReactNode>)[view]
 
-  return <FluentProvider theme={dark ? webDarkTheme : webLightTheme} className="app-provider" data-theme={dark ? 'dark' : 'light'}>
-    <div className="app-shell">
+  // `app-provider` must stay off FluentProvider's own root: Fluent copies that root class list onto the
+  // body-level portal mount node, where the app background and 100dvh turn it into a click-eating overlay.
+  return <FluentProvider theme={dark ? webDarkTheme : webLightTheme}>
+    <div className="app-provider app-shell" data-theme={dark ? 'dark' : 'light'}>
       <header className="topbar">
         <div className="brand"><Button className="rail-toggle" appearance="subtle" icon={<Navigation24Regular />} aria-label="Toggle navigation" onClick={() => setRailOpen(!railOpen)} /><div className="brand-mark">FM</div><div><strong>Firstmate Operator</strong><span>Authority stays visible</span></div></div>
         <div className="topbar-actions">{snapshot && <Tooltip content={snapshot.provenance.sourceContract} relationship="description"><Badge appearance="outline" color={snapshot.provenance.mode === 'fixture' ? 'warning' : 'success'}>{snapshot.provenance.mode === 'fixture' ? 'Fixture data' : 'Live data'}</Badge></Tooltip>}<Button appearance="subtle" icon={<ArrowSync24Regular />} aria-label="Refresh fleet" onClick={refresh} /><Button appearance="subtle" icon={<DarkTheme24Regular />} aria-label="Toggle color theme" onClick={() => setDark(!dark)} /></div>
