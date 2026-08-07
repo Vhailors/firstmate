@@ -598,7 +598,8 @@ if [ "$READ_ONLY" -eq 0 ] && [ ! -f "$FM_HOME/.fm-secondmate-home" ]; then
   fi
   if [ "$OPERATOR_AUTOSTART" != off ]; then
     subsection "OPERATOR"
-    if OPERATOR_OUT=$("$SCRIPT_DIR/fm-operator.sh" ensure 2>&1); then
+    if OPERATOR_OUT=$(FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" \
+      "$SCRIPT_DIR/fm-operator.sh" ensure 2>&1); then
       printf '%s\n' "$OPERATOR_OUT"
     else
       printf 'OPERATOR: unavailable - %s\n' "$OPERATOR_OUT"

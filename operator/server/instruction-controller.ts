@@ -38,6 +38,19 @@ export type InstructionControllerOptions = {
   execute?: (target: string, instruction: string) => Promise<void>
   now?: () => number
   createId?: () => string
+  logDiagnostic?: (message: string) => void
+}
+
+// fm-send distinguishes an unresolvable target, a failed backend send, and a
+// typed-but-unsubmitted composer by exit code and stderr. The browser keeps one
+// generic refusal, so the detail is written to the server log instead of being
+// discarded. The instruction text itself is never included.
+function describeExecuteFailure(target: string, error: unknown) {
+  const detail = error as { code?: unknown; signal?: unknown; stderr?: unknown }
+  const code = typeof detail?.code === 'number' || typeof detail?.code === 'string' ? detail.code : 'unknown'
+  const signal = typeof detail?.signal === 'string' ? detail.signal : 'none'
+  const stderr = typeof detail?.stderr === 'string' ? detail.stderr.trim().slice(0, 2_000) : ''
+  return `fm-operator: fm-send delivery failed for ${target}: exit=${code} signal=${signal} stderr=${stderr || '<empty>'}`
 }
 
 export class InstructionController {
@@ -46,11 +59,13 @@ export class InstructionController {
   private readonly execute: (target: string, instruction: string) => Promise<void>
   private readonly now: () => number
   private readonly createId: () => string
+  private readonly logDiagnostic: (message: string) => void
 
   constructor(options: InstructionControllerOptions) {
     this.readSnapshot = options.readSnapshot
     this.now = options.now ?? Date.now
     this.createId = options.createId ?? randomUUID
+    this.logDiagnostic = options.logDiagnostic ?? ((message) => { process.stderr.write(`${message}\n`) })
     this.execute = options.execute ?? (async (target, instruction) => {
       await execFileAsync(join(options.repoRoot, 'bin', 'fm-send.sh'), [target, instruction], {
         cwd: options.repoRoot,
@@ -100,9 +115,11 @@ export class InstructionController {
     if (JSON.stringify(current.resolution) !== JSON.stringify(pending.resolution)) {
       throw new InstructionMutationError(409, 'Worker identity or endpoint changed after preview. Prepare a new instruction.')
     }
+    const target = `fm-${current.worker.id}`
     try {
-      await this.execute(`fm-${current.worker.id}`, current.instruction)
-    } catch {
+      await this.execute(target, current.instruction)
+    } catch (error) {
+      this.logDiagnostic(describeExecuteFailure(target, error))
       throw new InstructionMutationError(409, 'fm-send refused or could not confirm the instruction delivery.')
     }
     return {

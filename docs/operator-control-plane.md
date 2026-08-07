@@ -120,6 +120,8 @@ Success means the existing owner confirmed submission, not that the requested wo
 
 The implemented adapter sends one confirmed instruction through `bin/fm-send.sh` after exact identity and endpoint re-resolution.
 It stores previews in server memory for 60 seconds, consumes them once, and returns success only when `fm-send` confirms submission.
+Instruction text that `fm-send` would read as its `--key` control selector is refused at preview, so the confirmed argv always means the literal text the operator saw.
+A refused delivery returns one generic browser error and writes the `fm-send` exit code and stderr to the server log, where `state/operator.log` keeps the distinguishable failure classes.
 Composer and busy guards, secondmate markers, pending-reply records, backend checks, and ThinkPad refusal remain inside the existing owners.
 
 Task intake, report revision, and skill invocation remain unavailable until each path has an equally narrow owner adapter.

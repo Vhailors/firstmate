@@ -20,6 +20,8 @@ FM_HOME=/absolute/path/to/firstmate-home bin/fm-operator.sh start
 
 The launcher creates `config/operator-token` inside that home with mode `0600`, or reuses the existing token when its recorded canonical home still matches.
 It stores the runtime record and log under the same home's gitignored `state/` directory.
+It serves the production build with `vite preview`, building `operator/dist` first when that bundle is missing, and reports success only after the loopback port accepts a connection.
+The development server with hot module replacement is never used for a session or an autostart.
 
 Open a private browser session with the generated URL:
 
@@ -39,7 +41,7 @@ Write `off` to `config/operator-autostart` when a primary home should skip the h
 
 `pnpm dev` and `pnpm start` are live-only and expect the launcher to have created the home token first.
 Both refuse startup without `FM_HOME`, and both read the home-bound token from `<FM_HOME>/config/operator-token` unless `FM_OPERATOR_TOKEN_FILE` names another bound record.
-`pnpm start` serves an existing production build on loopback.
+`pnpm start` serves an existing production build on loopback and is the same startup path `bin/fm-operator.sh` uses; `pnpm dev` is the development server and is for local package work only.
 
 ```sh
 pnpm --dir operator build

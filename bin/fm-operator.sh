@@ -4,7 +4,9 @@
 #
 # Every command requires an explicit FM_HOME.
 # start and ensure generate or reuse config/operator-token, bind that credential
-# to the canonical home, and run the live Vite server on loopback.
+# to the canonical home, and serve the built operator bundle with `vite preview`
+# on loopback. The development server with HMR stays behind `pnpm dev` and is
+# never used for session initialization.
 # url prints the token-bearing fragment URL used to bootstrap one browser tab;
 # the browser immediately moves the token into sessionStorage and clears the
 # fragment.
@@ -14,7 +16,6 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 if [ -z "${FM_HOME+x}" ] || [ -z "${FM_HOME:-}" ]; then
   echo "fm-operator: FM_HOME is required; refusing an unbound operator runtime" >&2
@@ -25,6 +26,13 @@ if [ ! -d "$FM_HOME" ]; then
   exit 1
 fi
 FM_HOME=$(cd "$FM_HOME" && pwd -P)
+
+# fm-wake-lib.sh reassigns FM_ROOT, FM_HOME, and STATE at source time, so it is
+# sourced before this script derives the paths it owns.
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+
+FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 if [ ! -d "$FM_ROOT" ]; then
   echo "fm-operator: Firstmate code root '$FM_ROOT' is not a directory" >&2
   exit 1
@@ -35,9 +43,7 @@ STATE="$FM_HOME/state"
 TOKEN_FILE="$CONFIG/operator-token"
 RUNTIME_FILE="$STATE/operator-runtime"
 LOG_FILE="$STATE/operator.log"
-
-# shellcheck source=bin/fm-wake-lib.sh
-. "$SCRIPT_DIR/fm-wake-lib.sh"
+OPERATOR_DIR=${FM_OPERATOR_DIR:-$FM_ROOT/operator}
 
 operator_record_value() { # <file> <key>
   sed -n "s/^$2=//p" "$1" | sed -n '1p'
@@ -137,6 +143,57 @@ operator_runtime_matches() {
   [ "$current_identity" = "$expected_identity" ]
 }
 
+# Terminate a recorded operator process that this home still owns. A runtime
+# record whose pid identity still resolves is never discarded without stopping
+# the process it names, otherwise a port or root change orphans a live server
+# that no later stop can reclaim.
+operator_terminate_recorded() {
+  local pid expected current attempt
+  pid=$(operator_record_value "$RUNTIME_FILE" pid)
+  expected=$(operator_record_value "$RUNTIME_FILE" pid_identity)
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  [ -n "$expected" ] || return 0
+  current=$(fm_pid_identity "$pid" 2>/dev/null) || return 0
+  [ "$current" = "$expected" ] || return 0
+  kill -TERM "$pid" 2>/dev/null || true
+  attempt=0
+  while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 50 ]; do
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "fm-operator: recorded operator process $pid did not stop after SIGTERM" >&2
+    return 1
+  fi
+}
+
+operator_port_open() { # <port>
+  ( exec 3<>"/dev/tcp/127.0.0.1/$1" ) >/dev/null 2>&1
+}
+
+# `vite preview` serves an existing production build, so the bundle has to exist
+# before the loopback server is useful. Build it once here rather than falling
+# back to the development server.
+operator_build_ready() { # <vite-bin>
+  local vite_bin=$1
+  [ -d "$OPERATOR_DIR" ] || {
+    echo "fm-operator: operator package directory '$OPERATOR_DIR' is not a directory" >&2
+    return 1
+  }
+  if [ -f "$OPERATOR_DIR/dist/index.html" ]; then
+    return 0
+  fi
+  echo "fm-operator: building the operator bundle in $OPERATOR_DIR" >&2
+  ( cd "$OPERATOR_DIR" && "$vite_bin" build ) >> "$LOG_FILE" 2>&1 || {
+    echo "fm-operator: operator build failed; inspect $LOG_FILE" >&2
+    return 1
+  }
+  [ -f "$OPERATOR_DIR/dist/index.html" ] || {
+    echo "fm-operator: operator build produced no $OPERATOR_DIR/dist/index.html" >&2
+    return 1
+  }
+}
+
 operator_start() {
   local port token vite_bin pid pid_identity attempt tmp
   port=$(operator_port)
@@ -150,25 +207,38 @@ operator_start() {
       echo "fm-operator: refusing unsafe runtime record $RUNTIME_FILE" >&2
       return 1
     }
+    operator_terminate_recorded || return 1
     rm -f "$RUNTIME_FILE"
   fi
-  vite_bin=${FM_OPERATOR_VITE_BIN:-$FM_ROOT/operator/node_modules/.bin/vite}
+  vite_bin=${FM_OPERATOR_VITE_BIN:-$OPERATOR_DIR/node_modules/.bin/vite}
   [ -x "$vite_bin" ] || {
-    echo "fm-operator: operator dependencies are missing; run 'pnpm --dir $FM_ROOT/operator install'" >&2
+    echo "fm-operator: operator dependencies are missing; run 'pnpm --dir $OPERATOR_DIR install'" >&2
     return 1
   }
-  FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_OPERATOR_TOKEN_FILE="$TOKEN_FILE" \
-    nohup "$vite_bin" --host 127.0.0.1 --port "$port" --strictPort > "$LOG_FILE" 2>&1 &
+  operator_build_ready "$vite_bin" || return 1
+  # Vite resolves its config and root from the working directory, so the server
+  # is launched from the operator package and not from the captain's cwd.
+  (
+    cd "$OPERATOR_DIR" \
+      && FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_OPERATOR_TOKEN_FILE="$TOKEN_FILE" \
+        exec nohup "$vite_bin" preview --host 127.0.0.1 --port "$port" --strictPort
+  ) > "$LOG_FILE" 2>&1 &
   pid=$!
   attempt=0
-  while [ "$attempt" -lt 20 ]; do
+  until operator_port_open "$port"; do
     kill -0 "$pid" 2>/dev/null || {
       wait "$pid" 2>/dev/null || true
       echo "fm-operator: live server failed to start; inspect $LOG_FILE" >&2
       return 1
     }
-    sleep 0.1
     attempt=$((attempt + 1))
+    if [ "$attempt" -ge 150 ]; then
+      kill -TERM "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      echo "fm-operator: live server never accepted loopback connections on port $port; inspect $LOG_FILE" >&2
+      return 1
+    fi
+    sleep 0.1
   done
   pid_identity=$(fm_pid_identity "$pid" 2>/dev/null) || {
     kill -TERM "$pid" 2>/dev/null || true
@@ -191,22 +261,11 @@ operator_start() {
 }
 
 operator_stop() {
-  local pid attempt
   operator_runtime_matches || {
     echo "fm-operator: no matching live operator runtime for $FM_HOME" >&2
     return 1
   }
-  pid=$(operator_record_value "$RUNTIME_FILE" pid)
-  kill -TERM "$pid"
-  attempt=0
-  while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 50 ]; do
-    sleep 0.1
-    attempt=$((attempt + 1))
-  done
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "fm-operator: operator process $pid did not stop after SIGTERM" >&2
-    return 1
-  fi
+  operator_terminate_recorded || return 1
   rm -f "$RUNTIME_FILE"
   printf 'OPERATOR: stopped for %s\n' "$FM_HOME"
 }

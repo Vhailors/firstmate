@@ -56,6 +56,13 @@ describe('authorization and confirmation boundaries', () => {
     })
     expect(preview.confirmationRequired).toBe(true)
   })
+
+  it('refuses instruction text that fm-send would read as its --key control path', () => {
+    expect(() => previewInstruction(fixtureSnapshot, 'firstmate-control-plane-ui-20260810', ' --key '))
+      .toThrow('control selector')
+    expect(previewInstruction(fixtureSnapshot, 'firstmate-control-plane-ui-20260810', '--key escape').command.args)
+      .toEqual(['fm-firstmate-control-plane-ui-20260810', '--key escape'])
+  })
 })
 
 describe('secret redaction', () => {

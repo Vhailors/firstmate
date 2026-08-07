@@ -85,6 +85,9 @@ export function previewInstruction(
   const trimmed = instruction.trim()
   if (!trimmed) throw new Error('Instruction text is required.')
   if (trimmed.length > 2_000) throw new Error('Instruction exceeds the 2,000 character safety bound.')
+  if (trimmed === '--key') {
+    throw new Error('Instruction text must not be the fm-send "--key" control selector.')
+  }
   return {
     worker,
     instruction: trimmed,

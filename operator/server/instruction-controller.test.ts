@@ -1,7 +1,55 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from 'vitest'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { fixtureSnapshot } from '../src/fixture.ts'
 import { InstructionController } from './instruction-controller.ts'
+
+const WORKER_ID = 'firstmate-control-plane-ui-20260810'
+const temporaryRoots: string[] = []
+
+afterAll(async () => {
+  await Promise.all(temporaryRoots.map((path) => rm(path, { recursive: true, force: true })))
+})
+
+// A real repoRoot with an executable bin/fm-send.sh, so the controller's own
+// default execution path - resolved script, argv, cwd, and explicit home env -
+// is what the assertions observe.
+async function fakeSendRepo(script: string) {
+  const repoRoot = await realpath(await mkdtemp(join(tmpdir(), 'fm-operator-repo-')))
+  const fmHome = await realpath(await mkdtemp(join(tmpdir(), 'fm-operator-home-')))
+  temporaryRoots.push(repoRoot, fmHome)
+  const record = join(repoRoot, 'fm-send.record')
+  await mkdir(join(repoRoot, 'bin'), { recursive: true })
+  await writeFile(
+    join(repoRoot, 'bin', 'fm-send.sh'),
+    [
+      '#!/usr/bin/env bash',
+      'set -u',
+      '{',
+      "  printf 'argc=%s\\n' \"$#\"",
+      "  printf 'arg1=%s\\n' \"${1:-}\"",
+      "  printf 'arg2=%s\\n' \"${2:-}\"",
+      "  printf 'cwd=%s\\n' \"$(pwd -P)\"",
+      "  printf 'fm_home=%s\\n' \"${FM_HOME:-}\"",
+      "  printf 'fm_root=%s\\n' \"${FM_ROOT_OVERRIDE:-}\"",
+      `} > '${record}'`,
+      script,
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  )
+  return { repoRoot, fmHome, record }
+}
+
+async function readRecord(record: string) {
+  const lines = (await readFile(record, 'utf8')).trimEnd().split('\n')
+  return Object.fromEntries(lines.map((line) => {
+    const split = line.indexOf('=')
+    return [line.slice(0, split), line.slice(split + 1)]
+  }))
+}
 
 describe('confirmed instruction mutation', () => {
   it('previews without mutation, re-resolves, and executes fm-send once after confirmation', async () => {
@@ -49,5 +97,59 @@ describe('confirmed instruction mutation', () => {
     endpoint = 'fm-lab:replacement-pane'
     await expect(controller.confirm('preview-drift')).rejects.toThrow('endpoint changed')
     expect(execute).not.toHaveBeenCalled()
+  })
+})
+
+describe('fm-send script boundary', () => {
+  it('runs the repo fm-send.sh with fixed argv, repo cwd, and an explicit home', async () => {
+    const { repoRoot, fmHome, record } = await fakeSendRepo('exit 0')
+    const controller = new InstructionController({
+      repoRoot,
+      fmHome,
+      readSnapshot: async () => fixtureSnapshot,
+      createId: () => 'preview-boundary',
+    })
+
+    await controller.preview(WORKER_ID, '  Restart the failing check.  ')
+    await expect(controller.confirm('preview-boundary')).resolves.toEqual({
+      status: 'accepted',
+      durableId: WORKER_ID,
+      owner: 'bin/fm-send.sh',
+    })
+
+    expect(await readRecord(record)).toEqual({
+      argc: '2',
+      arg1: `fm-${WORKER_ID}`,
+      arg2: 'Restart the failing check.',
+      cwd: repoRoot,
+      fm_home: fmHome,
+      fm_root: repoRoot,
+    })
+  })
+
+  it('refuses generically to the browser while logging the fm-send exit detail', async () => {
+    const { repoRoot, fmHome, record } = await fakeSendRepo(
+      "printf 'error: text typed but not submitted\\n' >&2\nexit 3",
+    )
+    const logged: string[] = []
+    const controller = new InstructionController({
+      repoRoot,
+      fmHome,
+      readSnapshot: async () => fixtureSnapshot,
+      createId: () => 'preview-refused',
+      logDiagnostic: (message) => logged.push(message),
+    })
+
+    await controller.preview(WORKER_ID, 'Escalate the stuck lane.')
+    await expect(controller.confirm('preview-refused')).rejects.toThrow(
+      'fm-send refused or could not confirm the instruction delivery.',
+    )
+
+    expect((await readRecord(record)).arg1).toBe(`fm-${WORKER_ID}`)
+    expect(logged).toHaveLength(1)
+    expect(logged[0]).toContain(`fm-${WORKER_ID}`)
+    expect(logged[0]).toContain('exit=3')
+    expect(logged[0]).toContain('text typed but not submitted')
+    expect(logged[0]).not.toContain('Escalate the stuck lane.')
   })
 })
