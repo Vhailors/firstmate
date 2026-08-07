@@ -138,7 +138,10 @@
 #                  written by this script; outside the worktree to avoid pi's trust gate)
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
-#     __PIWORKFLOW__ absolute path to the installed pi-dynamic-workflows extension for a pi crewmate
+#     __PIWORKFLOW__ absolute path to the installed pi-dynamic-workflows extension for a pi crewmate.
+#                    Optional: when the extension is not installed and no explicit
+#                    FM_PI_DYNAMIC_WORKFLOWS_EXTENSION is set, the flag is dropped and the
+#                    crewmate launches without workflow fan-out.
 #     __PIBACKGROUND__ absolute path to background-terminals for a thin pi crewmate
 #     __PIRENDERCACHE__ absolute path to pi-render-cache for a thin pi crewmate
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
@@ -1080,7 +1083,19 @@ esac
 case "$HARNESS" in
   pi|pi-signed)
     if [ "$KIND" != secondmate ] && case "$LAUNCH" in *__PIWORKFLOW__*) true ;; *) false ;; esac; then
-      PI_DYNAMIC_WORKFLOWS_EXTENSION=$(pi_dynamic_workflows_extension_path) || exit 1
+      # Workflow fan-out is optional. When pi-dynamic-workflows is not installed
+      # (and no explicit FM_PI_DYNAMIC_WORKFLOWS_EXTENSION points at one), drop
+      # the flag and launch without fan-out rather than refusing the spawn. An
+      # explicit absolute-path override that does not resolve is still a hard
+      # error, because the caller named a specific extension it expects.
+      if [ -n "${FM_PI_DYNAMIC_WORKFLOWS_EXTENSION:-}" ]; then
+        PI_DYNAMIC_WORKFLOWS_EXTENSION=$(pi_dynamic_workflows_extension_path) || exit 1
+      elif PI_DYNAMIC_WORKFLOWS_EXTENSION=$(pi_dynamic_workflows_extension_path 2>/dev/null); then
+        :
+      else
+        PI_DYNAMIC_WORKFLOWS_EXTENSION=
+        LAUNCH=${LAUNCH//-e __PIWORKFLOW__ /}
+      fi
       if pi_crew_thin_enabled; then
         PI_THIN_BACKGROUND_EXTENSION=$(pi_crew_thin_extension_path background-terminals \
           extensions/background-terminals/index.ts) || exit 1

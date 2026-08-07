@@ -114,7 +114,7 @@ run_spawn() {
     CHROME_DEVTOOLS_AXI_USER_DATA_DIR="${FM_TEST_CHROME_USER_DATA_DIR:-}" \
     CHROME_DEVTOOLS_AXI_HEADED="${FM_TEST_CHROME_HEADED:-}" \
     CHROME_DEVTOOLS_AXI_AUTO_CONNECT="${FM_TEST_CHROME_AUTO_CONNECT:-}" \
-    FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_TEST_PI_WORKFLOW_EXTENSION:-$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts}" \
+    FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_TEST_PI_WORKFLOW_EXTENSION-$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts}" \
     PI_CODING_AGENT_DIR="${FM_TEST_PI_CODING_AGENT_DIR:-}" \
     FM_FAKE_LAUNCH_LOG="$launchlog" FM_FAKE_ENV_LOG="$CASE_DIR/env.log" GROK_HOME="$home/grok-home" \
     HOME="${FM_TEST_HOME:-$HOME}" PATH="$fakebin:$PATH" \
@@ -662,7 +662,7 @@ test_pi_crewmate_missing_workflow_refuses_before_metadata() {
   pass "Pi workers refuse before metadata when workflow fan-out is unavailable"
 }
 
-test_pi_project_settings_disable_workflow_autoload() {
+test_pi_project_settings_track_no_workflow_package() {
   local out status
   out=$(python3 - "$ROOT/.pi/settings.json" 2>&1 <<'PY'
 import json
@@ -671,16 +671,45 @@ from pathlib import Path
 
 data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 entries = [pkg for pkg in data.get("packages", []) if "pi-dynamic-workflows" in str(pkg.get("source", ""))]
-if len(entries) != 1:
-    raise SystemExit(f"expected one pi-dynamic-workflows entry, found {len(entries)}")
-entry = entries[0]
-if entry.get("autoload") is not False or entry.get("extensions") != ["!**"]:
-    raise SystemExit("pi-dynamic-workflows must disable project autoload while remaining explicitly loadable")
+if entries:
+    raise SystemExit(
+        f"pi-dynamic-workflows is no longer used by this fleet; found {len(entries)} tracked entry"
+    )
+# Any package that is tracked must still keep project autoload off, so a Pi
+# session never inherits fleet extensions implicitly.
+for pkg in data.get("packages", []):
+    if pkg.get("autoload") is not False or pkg.get("extensions") != ["!**"]:
+        raise SystemExit(f"tracked Pi package must disable project autoload: {pkg}")
 PY
   )
   status=$?
-  expect_code 0 "$status" "tracked Pi workflow isolation settings are invalid: $out"
-  pass "tracked Pi settings disable workflow extension autoload"
+  expect_code 0 "$status" "tracked Pi settings are invalid: $out"
+  pass "tracked Pi settings carry no workflow package and keep autoload off"
+}
+
+test_pi_crewmate_without_workflow_launches_without_fan_out() {
+  local rec id out status launch
+  id=profile-pi-workflow-optional-z8c
+  rec=$(make_spawn_case profile-pi-workflow-optional pi "$id")
+  read_case_record "$rec"
+  # No installed extension and no explicit override: fan-out is optional, so the
+  # spawn must succeed and simply drop the flag.
+  rm -rf "$CASE_DIR/pi-dynamic-workflows"
+  mkdir -p "$CASE_DIR/empty-pi-agent"
+
+  out=$(FM_TEST_PI_WORKFLOW_EXTENSION= \
+    FM_TEST_PI_CODING_AGENT_DIR="$CASE_DIR/empty-pi-agent" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "absent Pi workflow extension should not refuse the spawn: $out"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_not_contains "$launch" "pi-dynamic-workflows" \
+    "absent Pi workflow extension still referenced the workflow package"
+  assert_not_contains "$launch" "__PIWORKFLOW__" \
+    "absent Pi workflow extension left the unresolved placeholder in the launch"
+  assert_contains "$launch" "FM_PI_EXTENSION_ISOLATION=1 pi --no-extensions" \
+    "absent Pi workflow extension broke the Pi isolation template"
+  pass "Pi workers launch without fan-out when the workflow extension is absent"
 }
 
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
@@ -872,7 +901,8 @@ test_pi_thin_crewmate_adds_opt_in_extensions
 test_pi_thin_missing_extension_refuses_before_metadata
 test_pi_thin_does_not_change_secondmate_template
 test_pi_crewmate_missing_workflow_refuses_before_metadata
-test_pi_project_settings_disable_workflow_autoload
+test_pi_crewmate_without_workflow_launches_without_fan_out
+test_pi_project_settings_track_no_workflow_package
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
 test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity

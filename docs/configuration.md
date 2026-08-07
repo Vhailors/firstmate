@@ -222,7 +222,9 @@ Plain Pi launches set `FM_PI_HARNESS=pi`, so a signed primary's environment cann
 `bin/fm-pi-primary.sh` launches a Pi primary with extension discovery disabled and restores only the required turn-end guard and watcher extensions.
 It defaults Chrome automation to `${HOME}/.chrome-llm-profile`, headed mode, and automatic attachment off, while preserving explicit `CHROME_DEVTOOLS_AXI_*` caller overrides; `fm-spawn.sh` sends the same resolved values through its existing pane environment channel for workers.
 The launcher also loads `FM_CAPTAIN_DECISIONS_EXT`, or `${HOME}/.pi/agent/extensions/fm-captain-decisions/index.ts` by default, only when that resolved file exists.
-Pi ship and scout workers use the same isolation boundary and additionally load the resolved `pi-dynamic-workflows` extension, while Pi secondmates do not load workflow fan-out.
+Pi ship and scout workers use the same isolation boundary and additionally load the resolved `pi-dynamic-workflows` extension when it is installed, while Pi secondmates do not load workflow fan-out.
+Workflow fan-out is optional: when the extension is absent and `FM_PI_DYNAMIC_WORKFLOWS_EXTENSION` is unset, the launch drops the flag and the worker runs without fan-out.
+An explicit `FM_PI_DYNAMIC_WORKFLOWS_EXTENSION` that does not resolve remains a hard error.
 A home-local `config/pi-crew-thin` containing `1` or `on` adds `--no-skills` plus the explicitly resolved background-terminals and pi-render-cache extensions to normal Pi ship and scout workers only.
 The thin opt-in is not inherited and never applies to a Pi secondmate coordinator.
 When it is absent or contains `default`, crewmates mirror the firstmate's own harness.

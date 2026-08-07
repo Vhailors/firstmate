@@ -296,7 +296,8 @@ Pi's primary watcher protocol also requires the tracked `.pi/extensions/fm-prima
 `bin/fm-pi-primary.sh` loads both primary extensions explicitly with extension discovery disabled, so unrelated global packages cannot register duplicate tools in the Firstmate primary.
 The model arms through `fm_watch_arm_pi`, never a foreground bash arm; the watcher tool result and clean-exit fallback are owned by `docs/supervision-protocols/pi.md`.
 `bin/fm-session-start.sh` reports when the live Pi-family session has not loaded both extensions or was started outside the isolated launcher boundary.
-Pi ship and scout workers load only the generated turn-end extension plus the resolved pi-dynamic-workflows extension, with the optional home-local thin profile adding its two explicit extensions.
+Pi ship and scout workers load only the generated turn-end extension plus the resolved pi-dynamic-workflows extension when that extension is installed, with the optional home-local thin profile adding its two explicit extensions.
+When pi-dynamic-workflows is absent and no explicit `FM_PI_DYNAMIC_WORKFLOWS_EXTENSION` is set, the spawn drops workflow fan-out instead of refusing.
 When a secondmate is launched on Pi or pi-signed, `fm-spawn.sh --secondmate` disables extension discovery and loads only the secondmate home's tracked turn-end guard and watcher extensions.
 
 ## grok (VERIFIED 2026-06-29, grok 0.2.73; slash-submit re-verified 2026-07-03 on 0.2.82; reasoning-effort ceiling re-verified 2026-07-13 on 0.2.99; exit paths re-verified 2026-07-19 on grok 0.2.103)

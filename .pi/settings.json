@@ -1,9 +1,3 @@
 {
-  "packages": [
-    {
-      "source": "https://github.com/QuintinShaw/pi-dynamic-workflows",
-      "autoload": false,
-      "extensions": ["!**"]
-    }
-  ]
+  "packages": []
 }
