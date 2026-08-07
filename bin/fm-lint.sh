@@ -22,6 +22,7 @@
 #   fm-lint.sh --jobs <1|2> [path]...  override bounded worker count
 #   fm-lint.sh --telemetry <path> ...  write a quiet metrics snapshot
 #   fm-lint.sh --required-version      print the ShellCheck pin
+#   fm-lint.sh --list-files            print the canonical file set
 #   fm-lint.sh --help                  print this usage
 set -u
 
@@ -83,11 +84,12 @@ if [ "${1:-}" = "--required-version" ]; then
 fi
 
 fm_lint_usage() {
-  sed -n '2,25{s/^# \{0,1\}//;p;}' "$SELF"
+  sed -n '2,26{s/^# \{0,1\}//;p;}' "$SELF"
 }
 
 JOBS=${FM_LINT_JOBS:-2}
 TELEMETRY=${FM_LINT_TELEMETRY:-}
+LIST_FILES=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --jobs)
@@ -108,6 +110,10 @@ while [ "$#" -gt 0 ]; do
       TELEMETRY=${1#*=}
       shift
       ;;
+    --list-files)
+      LIST_FILES=1
+      shift
+      ;;
     --help|-h)
       fm_lint_usage
       exit 0
@@ -124,6 +130,22 @@ case "$JOBS" in
   1|2) ;;
   *) printf 'fm-lint.sh: jobs must be 1 or 2, got %s.\n' "$JOBS" >&2; exit 2 ;;
 esac
+
+if [ "$#" -gt 0 ]; then
+  ROOTS=("$@")
+else
+  ROOTS=(bin/*.sh bin/backends/*.sh tests/*.sh)
+fi
+ROOT_COUNT=${#ROOTS[@]}
+
+if [ "$LIST_FILES" -eq 1 ]; then
+  [ "$#" -eq 0 ] || {
+    printf 'fm-lint.sh: --list-files does not accept explicit paths.\n' >&2
+    exit 2
+  }
+  printf '%s\n' "${ROOTS[@]}"
+  exit 0
+fi
 
 if ! command -v shellcheck >/dev/null 2>&1; then
   printf 'fm-lint.sh: ShellCheck not found; install ShellCheck %s for CI parity.\n' \
@@ -143,15 +165,6 @@ if [ "$resolved" != "$REQUIRED_SHELLCHECK" ]; then
     "$REQUIRED_SHELLCHECK" "$resolved" "$REQUIRED_SHELLCHECK" >&2
   exit 1
 fi
-
-if [ "$#" -gt 0 ]; then
-  ROOTS=("$@")
-else
-  # Canonical file set: the one authoritative definition. Callers never repeat
-  # these globs, and every adapter and test shell remains an independent root.
-  ROOTS=(bin/*.sh bin/backends/*.sh tests/*.sh)
-fi
-ROOT_COUNT=${#ROOTS[@]}
 
 if [ -n "$TELEMETRY" ]; then
   telemetry_parent=$(dirname "$TELEMETRY")
@@ -181,7 +194,16 @@ fm_lint_cleanup() {
   done
   rm -rf "$TMP_ROOT"
 }
-trap fm_lint_cleanup EXIT
+# Cleanup waits on the worker pids, which would overwrite $? and turn a failing
+# lint into exit 0, so the trap captures the real status before cleaning up.
+# shellcheck disable=SC2329 # Registered by the EXIT trap below.
+fm_lint_exit() {  # <status>
+  local status=$1
+  trap - EXIT
+  fm_lint_cleanup
+  exit "$status"
+}
+trap 'fm_lint_exit "$?"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -269,6 +291,9 @@ if [ -n "$TELEMETRY" ]; then
   TELEMETRY_CPU_START=$(fm_lint_aggregate_cpu)
 fi
 
+# Workers are handed their environment through the absolute /usr/bin/env, never a
+# PATH-resolved `env`: a shadowing helper earlier on PATH could otherwise drop the
+# pinned FM_LINT_SHELLCHECK handoff and exit 0 without linting anything.
 fm_lint_run_worker() {  # <worker-index>
   local worker_index=$1 manifest timing
   manifest="$TMP_ROOT/manifest.$worker_index"
@@ -277,18 +302,18 @@ fm_lint_run_worker() {  # <worker-index>
     if [ "$(uname)" = Darwin ]; then
       exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
         /usr/bin/time -lp -o "$timing" \
-        env FM_LINT_INTERNAL=1 FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
+        /usr/bin/env FM_LINT_INTERNAL=1 FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
         "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
     else
       exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
         /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M' -o "$timing" \
-        env FM_LINT_INTERNAL=1 FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
+        /usr/bin/env FM_LINT_INTERNAL=1 FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
         "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
     fi
   else
     [ -z "$TELEMETRY" ] || printf 'timing_unavailable=1\n' > "$timing"
     exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
-      env FM_LINT_INTERNAL=1 FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
+      /usr/bin/env FM_LINT_INTERNAL=1 FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
       "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
   fi
 }

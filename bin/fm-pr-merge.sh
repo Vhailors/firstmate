@@ -7,6 +7,10 @@
 # Merge method defaults to --squash when the caller passes none of --squash,
 # --merge, --rebase, or --method after the optional -- separator. Extra args
 # must not include --repo or -R because the repository comes only from the URL.
+#
+# A task dispatched with fm-spawn.sh --no-merge records merge=blocked and is
+# refused here before anything is recorded or merged; bin/fm-merge-authority-lib.sh
+# owns that contract. No merge-command flag lifts the block.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
 set -eu
 
@@ -17,6 +21,13 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-merge-authority-lib.sh
+. "$SCRIPT_DIR/fm-merge-authority-lib.sh"
+
+if [ "${1:-}" = --captain-authorized ]; then
+  echo "error: --captain-authorized is not supported; a merge command cannot lift merge=blocked" >&2
+  exit 2
+fi
 
 if [ "$#" -lt 2 ]; then
   echo "error: invalid PR merge request" >&2
@@ -69,6 +80,11 @@ if [ ! -f "$META" ] || [ -L "$META" ]; then
   echo "error: task metadata is unavailable" >&2
   exit 1
 fi
+
+# Checked before fm-pr-check.sh so a blocked task records no pr=, arms no merge
+# poll, and reaches no forge call: the refusal must leave no trace of an attempt
+# to land work the captain forbade.
+fm_merge_authority_check "$META" "$ID" || exit 1
 
 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
 grep -qxF "pr=$URL" "$META" || {
