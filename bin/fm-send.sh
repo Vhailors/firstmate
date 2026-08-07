@@ -75,6 +75,8 @@ fi
 . "$SCRIPT_DIR/fm-marker-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
+# shellcheck source=bin/fm-secondmate-registry-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 
 FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the requested message WILL still be sent.' "$SCRIPT_DIR/fm-guard.sh" || true
 
@@ -123,7 +125,7 @@ fm_send_count_colons() {  # <string>
 }
 
 fm_send_resolve_target() {  # <raw-target>
-  local raw=$1 meta pane_meta target backend assumed colons id session hint
+  local raw=$1 meta pane_meta target backend assumed colons id session session_pin hint
 
   RESOLVED_TARGET=""
   TARGET_BACKEND=""
@@ -132,6 +134,8 @@ fm_send_resolve_target() {  # <raw-target>
   TARGET_META=""
   TARGET_SELECTOR=""
   TARGET_REMOTE_ID=""
+  TARGET_REMOTE_SESSION=""
+  TARGET_REMOTE_TARGET=""
   RESOLUTION_TRIED=""
 
   meta=$(fm_backend_meta_for_selector "$raw" "$STATE" 2>/dev/null || true)
@@ -145,6 +149,16 @@ fm_send_resolve_target() {  # <raw-target>
       EXPECTED_LABEL="fm-$id"
       TARGET_SELECTOR=1
       TARGET_REMOTE_ID=$id
+      session_pin=$(fm_meta_get "$meta" remote_herdr_session)
+      TARGET_REMOTE_TARGET=$(fm_meta_get "$meta" remote_target)
+      if ! TARGET_REMOTE_SESSION=$(secondmate_remote_route_session "$session_pin"); then
+        echo "error: remote metadata $meta has an invalid Herdr session pin: $session_pin" >&2
+        return 1
+      fi
+      if ! secondmate_remote_route_target_ok "$TARGET_REMOTE_SESSION" "$TARGET_REMOTE_TARGET"; then
+        echo "error: remote metadata $meta has no exact target in Herdr session $TARGET_REMOTE_SESSION" >&2
+        return 1
+      fi
       RESOLUTION_TRIED="meta=$meta; placement=remote"
       return 0
     fi
@@ -261,7 +275,8 @@ fi
 
 if [ "${1:-}" = "--key" ]; then
   if [ "$TARGET_BACKEND" = remote ]; then
-    if ! "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh key "$TARGET_REMOTE_ID" "$2" < /dev/null; then
+    if ! "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh key \
+      "$TARGET_REMOTE_ID" "$TARGET_REMOTE_SESSION" "$TARGET_REMOTE_TARGET" "$2" < /dev/null; then
       echo "error: key '$2' not sent to remote secondmate $TARGET_REMOTE_ID; completion may be unknown" >&2
       exit 1
     fi
@@ -318,7 +333,8 @@ else
   # verdict preserves the loud refusal boundary.
   send_rc=0
   if [ "$TARGET_BACKEND" = remote ]; then
-    if "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh send "$TARGET_REMOTE_ID" "$MESSAGE" < /dev/null >/dev/null; then
+    if "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh send \
+      "$TARGET_REMOTE_ID" "$TARGET_REMOTE_SESSION" "$TARGET_REMOTE_TARGET" "$MESSAGE" < /dev/null >/dev/null; then
       verdict=empty
     else
       send_rc=$?

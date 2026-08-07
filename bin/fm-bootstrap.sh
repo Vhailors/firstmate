@@ -502,7 +502,7 @@ secondmate_liveness_sweep() {
   # primary-only no-op there. Mid-session liveness remains explicitly out of
   # scope and requires a separate periodic signal.
   [ -d "$STATE" ] || return 0
-  local meta id window harness backend target agent_state out cause remote_host remote_rc readiness_reason route_out remote_backend
+  local meta id window harness backend target agent_state out cause remote_host remote_session remote_target remote_rc readiness_reason route_out remote_backend
   SECONDMATE_RESPAWNED_IDS=""
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
@@ -513,8 +513,23 @@ secondmate_liveness_sweep() {
     harness=$(fm_meta_get "$meta" harness)
     remote_host=$(fm_meta_get "$meta" remote_host)
     if [ -n "$remote_host" ]; then
+      remote_session=$(fm_meta_get "$meta" remote_herdr_session)
+      remote_target=$(fm_meta_get "$meta" remote_target)
+      if ! remote_session=$(secondmate_remote_route_session "$remote_session"); then
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote metadata has an invalid Herdr session pin"
+        continue
+      fi
+      if ! secondmate_remote_route_target_ok "$remote_session" "$remote_target"; then
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote metadata has no exact target in session $remote_session"
+        continue
+      fi
+      if ! secondmate_registry_line_for_id "$DATA/secondmates.md" "$id" \
+        || [ "$SECONDMATE_REGISTRY_HERDR_SESSION" != "$remote_session" ]; then
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote metadata does not match its registered Herdr session; migrate or retire it explicitly"
+        continue
+      fi
       remote_rc=0
-      fm_remote_readiness_ensure "$SCRIPT_DIR" "$id" || remote_rc=$?
+      fm_remote_readiness_ensure "$SCRIPT_DIR" "$id" "$remote_session" || remote_rc=$?
       if [ "$remote_rc" -eq 255 ]; then
         echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote host unavailable or endpoint state unknown; route preserved on $remote_host"
         continue
@@ -527,7 +542,8 @@ secondmate_liveness_sweep() {
         echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote readiness failed on $remote_host: $readiness_reason"
         continue
       fi
-      if out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
+      if out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state \
+        "$id" "$remote_session" "$remote_target" < /dev/null 2>/dev/null); then
         remote_rc=0
       else
         remote_rc=$?
@@ -543,7 +559,8 @@ secondmate_liveness_sweep() {
       agent_state=$(printf '%s\n' "$out" | tail -1)
       case "$agent_state" in
         alive)
-          if route_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh route "$id" < /dev/null 2>/dev/null); then
+          if route_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh route \
+            "$id" "$remote_session" "$remote_target" < /dev/null 2>/dev/null); then
             remote_rc=0
           else
             remote_rc=$?

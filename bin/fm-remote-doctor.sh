@@ -2,19 +2,21 @@
 # Check, and optionally repair, one remote account's second-mate readiness.
 #
 # Usage:
-#   bin/fm-on.sh <secondmate-id|ssh-alias> fm-remote-doctor.sh [--fix]
+#   bin/fm-on.sh <secondmate-id|ssh-alias> fm-remote-doctor.sh [--fix] [--herdr-session <default|fm-remote>]
 #
 # Run it through fm-on.sh so the fixed entrypoint invokes this readiness owner
 # over its plain SSH bootstrap. The command reports the same filesystem-composed
 # PATH used by worker jobs while retaining authority to inspect and repair the
 # worker itself.
 #
-# A remote second mate always runs on the Herdr backend in the dedicated
-# fm-remote session. Its account therefore needs the Firstmate-owned Aqua Herdr
-# agent plus the sibling dev.firstmate.remote-job worker that runs normal fm-on
-# commands through the Aqua or Linux job-worker path. Doctor remains invokable
-# over the plain-SSH bootstrap path to inspect and repair that worker. SSH cannot
-# create an Aqua session, so a host with no GUI login is a human gap rather than
+# A remote second mate always runs on the Herdr backend. Background fleet routes
+# use the dedicated fm-remote session and its Firstmate-owned Aqua Herdr agent.
+# Operator-visible routes use an already-running default session and never
+# create, repair, reload, or replace that interactive server. Both modes need
+# the sibling dev.firstmate.remote-job worker that runs normal fm-on commands
+# through the Aqua or Linux job-worker path. Doctor remains invokable over the
+# plain-SSH bootstrap path to inspect and repair that worker. SSH cannot create
+# an Aqua session, so a host with no GUI login is a human gap rather than
 # something --fix attempts to bypass.
 #
 # Line protocol, one fact per line, stable for script consumers:
@@ -22,6 +24,7 @@
 #   path=<the child PATH this command inherited>
 #   entrypoint=yes|no
 #   platform=darwin|linux|<uname -s>|unknown
+#   herdr_session=default|fm-remote
 #   required <tool>=<path>|MISSING
 #   optional <tool>=<path>|absent
 #   fix <check>=applied: <what changed>       (--fix only)
@@ -37,8 +40,8 @@
 # exits non-zero.
 #
 # --fix is idempotent and closes only automatable gaps: it writes and reloads
-# both Firstmate-owned Aqua agents, starts the Linux workers where no Aqua agent
-# applies, recreates the entrypoint symlink, and may add an owned ~/.local/bin
+# both Firstmate-owned Aqua agents for fm-remote, starts the Linux workers where
+# no Aqua agent applies, recreates the entrypoint symlink, and may add an owned ~/.local/bin
 # wrapper for a required tool it can discover under nvm, asdf, or mise. It never
 # installs packages, creates a login session, writes an auto-login password,
 # changes FileVault, stores an account password, or replaces a non-Firstmate
@@ -60,9 +63,8 @@ REQUIRED_TOOLS=(git jq herdr tasks-axi treehouse)
 HARNESS_TOOLS=(claude codex opencode pi pi-signed grok kimi)
 OPTIONAL_TOOLS=(tmux no-mistakes gh)
 LAUNCH_AGENT_LABEL=dev.firstmate.herdr.fm-remote
-# The dedicated remote-secondmate session. The user's interactive Herdr work
-# remains in the separate default session, which this readiness check never
-# requires or changes.
+# The route selects one of these exact sessions. The default session is always
+# read-only to doctor; fm-remote remains the Firstmate-owned background server.
 HERDR_SESSION_NAME=fm-remote
 LAUNCH_AGENT_DIR="${HOME:-}/Library/LaunchAgents"
 LAUNCH_AGENT_PLIST="$LAUNCH_AGENT_DIR/$LAUNCH_AGENT_LABEL.plist"
@@ -70,20 +72,35 @@ LAUNCH_AGENT_LOG_DIR="${HOME:-}/Library/Logs"
 LAUNCH_AGENT_LOG="$LAUNCH_AGENT_LOG_DIR/$LAUNCH_AGENT_LABEL.log"
 ENTRYPOINT_LINK="${HOME:-}/.local/bin/fm-remote-entrypoint.sh"
 
-usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 MODE=check
-case "${1:-}" in
-  '') ;;
-  --fix) MODE=fix; shift ;;
-  --worker-tool-probe)
-    [ "${FM_REMOTE_JOB_ACTIVE:-}" = 1 ] || { printf 'error: worker tool probe requires the remote job worker\n' >&2; exit 64; }
-    MODE='worker-tool-probe'
-    shift
-    ;;
-  *) usage ;;
-esac
-[ "$#" -eq 0 ] || usage
+MODE_SET=0
+SESSION_SET=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fix)
+      [ "$MODE_SET" -eq 0 ] || usage
+      MODE=fix
+      MODE_SET=1
+      shift
+      ;;
+    --herdr-session)
+      [ "$SESSION_SET" -eq 0 ] && [ "$#" -ge 2 ] || usage
+      case "$2" in default|fm-remote) HERDR_SESSION_NAME=$2 ;; *) usage ;; esac
+      SESSION_SET=1
+      shift 2
+      ;;
+    --worker-tool-probe)
+      [ "$MODE_SET" -eq 0 ] && [ "$SESSION_SET" -eq 0 ] && [ "$#" -eq 1 ] || usage
+      [ "${FM_REMOTE_JOB_ACTIVE:-}" = 1 ] || { printf 'error: worker tool probe requires the remote job worker\n' >&2; exit 64; }
+      MODE='worker-tool-probe'
+      MODE_SET=1
+      shift
+      ;;
+    *) usage ;;
+  esac
+done
 
 PLATFORM=$(fm_remote_job_platform)
 UID_NUM=$(id -u 2>/dev/null) || UID_NUM=
@@ -550,8 +567,13 @@ check_herdr_server() {
       "close the login-session gap first; a server started over SSH would not belong to an Aqua session"
     return 0
   fi
-  record herdr-server "fixable: the herdr server for session $HERDR_SESSION_NAME is not running" \
-    "rerun this command with --fix to start it"
+  if [ "$HERDR_SESSION_NAME" = default ]; then
+    record herdr-server "human: the operator-visible Herdr session default is not running" \
+      "open Herdr on the laptop in its default session, keep that visible session running, then rerun this command; Firstmate never starts it over SSH"
+  else
+    record herdr-server "fixable: the herdr server for session $HERDR_SESSION_NAME is not running" \
+      "rerun this command with --fix to start it"
+  fi
 }
 
 check_entrypoint_link() {
@@ -581,7 +603,13 @@ run_checks() {
   check_herdr
   check_gui_session
   check_remote_job_worker
-  check_launch_agent
+  if [ "$HERDR_SESSION_NAME" = fm-remote ]; then
+    check_launch_agent
+  else
+    record launchagent "skip: the operator owns the visible default Herdr session"
+    record launchagent-scope "skip: the operator owns the visible default Herdr session"
+    record launchagent-loaded "skip: the operator owns the visible default Herdr session"
+  fi
   check_herdr_server
   check_entrypoint_link
 }
@@ -749,6 +777,7 @@ else
   printf 'note: not launched through the fixed remote entrypoint; the reported PATH is this caller environment.\n' >&2
 fi
 printf 'platform=%s\n' "$PLATFORM"
+printf 'herdr_session=%s\n' "$HERDR_SESSION_NAME"
 
 run_checks
 if [ "$MODE" = fix ]; then

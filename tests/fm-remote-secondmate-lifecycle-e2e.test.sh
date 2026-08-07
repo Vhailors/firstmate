@@ -134,7 +134,7 @@ done
 host=$1
 entry=$2
 shift 2
-[ "$host" = remote-mac ] || exit 91
+case "$host" in remote-mac|fm-thinkpad) ;; *) exit 91 ;; esac
 [ "$entry" = fm-remote-entrypoint.sh ] || exit 92
 cd "$FM_FAKE_REMOTE_CWD" || exit 93
 argv_b64=$4
@@ -161,7 +161,15 @@ esac
 # owns the doctor's real behavior against controlled account fixtures; this
 # boundary owns only what the callers do with its verdict.
 if [ "$command_name" = fm-remote-doctor.sh ]; then
-  printf '%s %s\n' "${FM_FAKE_SSH_MODE:-normal}" "${_command_action:--}" >> "$FM_FAKE_DOCTOR_LOG"
+  # Record the doctor's complete argument vector so a test reads back the exact
+  # session the caller selected, not merely that a session flag was passed.
+  doctor_argv=$(perl -MMIME::Base64=decode_base64 -e '
+    my $data=decode_base64($ARGV[0]);
+    my @args=split(/\0/, $data);
+    shift @args;
+    print join(" ", @args);
+  ' "$argv_b64")
+  printf '%s %s\n' "${FM_FAKE_SSH_MODE:-normal}" "$doctor_argv" >> "$FM_FAKE_DOCTOR_LOG"
   case "${FM_FAKE_SSH_MODE:-normal}" in
     unreachable) exit 255 ;;
     doctor-fix-unknown)
@@ -241,6 +249,15 @@ case "${FM_FAKE_SSH_MODE:-normal}" in
 esac
 SH
 chmod +x "$FAKEBIN/fake-ssh"
+
+# fm-on.sh gates the standing fm-thinkpad route on a Tailscale peer check before
+# SSH, so a ThinkPad-routed seed needs that CLI present. tests/fm-on.test.sh owns
+# the gate's own reachable and unreachable behavior.
+cat > "$FAKEBIN/fake-tailscale" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$FAKEBIN/fake-tailscale"
 
 publish_healthy_watcher_identity() { # <state> <home> <watch-script>
   local state=$1 home=$2 watch=$3 identity
@@ -352,7 +369,7 @@ fi
 mkdir -p "$TMP_ROOT/seed-parent/data" "$TMP_ROOT/seed-parent/state"
 FM_SECONDMATE_CHARTER='Failing seed charter.' FM_SECONDMATE_SCOPE='failed seed' \
   FM_FAKE_SSH_MODE=provision-block-fail seed_env "$ROOT/bin/fm-remote-home-seed.sh" \
-  seed-fail remote-mac "$REMOTE_ROOT" "$TMP_ROOT/seed-fail-home" --no-projects \
+  seed-fail remote-mac "$REMOTE_ROOT" "$TMP_ROOT/seed-fail-home" --herdr-session fm-remote --no-projects \
   > "$TMP_ROOT/seed-fail.out" 2>&1 &
 seed_fail_pid=$!
 seed_wait=0
@@ -364,7 +381,7 @@ while [ ! -f "$TMP_ROOT/seed.entered" ]; do
 done
 FM_SECONDMATE_CHARTER='Successful seed charter.' FM_SECONDMATE_SCOPE='successful seed' \
   seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-keep remote-mac "$REMOTE_ROOT" \
-  "$TMP_ROOT/seed-keep-home" --no-projects > "$TMP_ROOT/seed-keep.out" 2>&1 &
+  "$TMP_ROOT/seed-keep-home" --herdr-session fm-remote --no-projects > "$TMP_ROOT/seed-keep.out" 2>&1 &
 seed_keep_pid=$!
 sleep 0.2
 kill -0 "$seed_keep_pid" 2>/dev/null || fail "competing seed bypassed the shared registry transaction"
@@ -381,7 +398,7 @@ pass "remote seed rollback preserves serialized competing routes"
 : > "$DOCTOR_LOG"
 if FM_SECONDMATE_CHARTER='Unknown readiness charter.' FM_SECONDMATE_SCOPE='unknown readiness' \
   FM_FAKE_SSH_MODE=doctor-fix-unknown seed_env "$ROOT/bin/fm-remote-home-seed.sh" \
-  seed-unknown remote-mac "$REMOTE_ROOT" "$TMP_ROOT/seed-unknown-home" --no-projects \
+  seed-unknown remote-mac "$REMOTE_ROOT" "$TMP_ROOT/seed-unknown-home" --herdr-session fm-remote --no-projects \
   > "$TMP_ROOT/seed-unknown.out" 2>&1; then
   fail "seeding claimed success after readiness repair completion became unknown"
 fi
@@ -393,8 +410,8 @@ assert_present "$TMP_ROOT/seed-parent/data/seed-unknown/brief.md" \
   "unknown readiness removed the scaffolded brief"
 assert_absent "$TMP_ROOT/seed-unknown-home" \
   "unknown readiness proceeded into remote home provisioning"
-[ "$(cat "$DOCTOR_LOG")" = 'doctor-fix-unknown -
-doctor-fix-unknown --fix' ] || fail "unknown readiness did not occur during the repair stage"$'\n'"$(cat "$DOCTOR_LOG")"
+[ "$(cat "$DOCTOR_LOG")" = 'doctor-fix-unknown --herdr-session fm-remote
+doctor-fix-unknown --fix --herdr-session fm-remote' ] || fail "unknown readiness did not occur during the repair stage"$'\n'"$(cat "$DOCTOR_LOG")"
 pass "unknown readiness preserves its route and brief for reconciliation"
 
 # A host that cannot hold a durable second mate must be rejected by the
@@ -403,7 +420,7 @@ pass "unknown readiness preserves its route and brief for reconciliation"
 : > "$DOCTOR_LOG"
 if FM_SECONDMATE_CHARTER='Unready host charter.' FM_SECONDMATE_SCOPE='unready host' \
   FM_FAKE_SSH_MODE=doctor-human seed_env "$ROOT/bin/fm-remote-home-seed.sh" \
-  seed-toolless remote-mac "$REMOTE_ROOT" "$TMP_ROOT/seed-toolless-home" --no-projects \
+  seed-toolless remote-mac "$REMOTE_ROOT" "$TMP_ROOT/seed-toolless-home" --herdr-session fm-remote --no-projects \
   > "$TMP_ROOT/seed-toolless.out" 2>&1; then
   fail "seeding proceeded against a host that is not ready for a remote second mate"
 fi
@@ -418,9 +435,9 @@ assert_no_grep '- seed-toolless ' "$TMP_ROOT/seed-parent/data/secondmates.md" \
   "the refused route survived the preflight rollback"
 assert_absent "$TMP_ROOT/seed-parent/data/seed-toolless/brief.md" \
   "the refused route left its scaffolded charter behind"
-[ "$(cat "$DOCTOR_LOG")" = 'doctor-human -
-doctor-human --fix
-doctor-human -' ] || fail "the seed did not run the check, repair, re-check sequence"$'\n'"$(cat "$DOCTOR_LOG")"
+[ "$(cat "$DOCTOR_LOG")" = 'doctor-human --herdr-session fm-remote
+doctor-human --fix --herdr-session fm-remote
+doctor-human --herdr-session fm-remote' ] || fail "the seed did not run the check, repair, re-check sequence"$'\n'"$(cat "$DOCTOR_LOG")"
 pass "remote seeding checks, repairs, and re-checks readiness, then stops on a remaining gap"
 
 # The same gate must accept a host whose only gaps were repairable.
@@ -428,19 +445,19 @@ pass "remote seeding checks, repairs, and re-checks readiness, then stops on a r
 rm -f "$TMP_ROOT/doctor.repaired"
 out=$(FM_SECONDMATE_CHARTER='Repairable host charter.' FM_SECONDMATE_SCOPE='repairable host' \
   FM_FAKE_SSH_MODE=doctor-fixable seed_env "$ROOT/bin/fm-remote-home-seed.sh" \
-  seed-repair remote-mac "$REMOTE_ROOT" "$TMP_ROOT/seed-repair-home" --no-projects 2>&1) \
+  seed-repair remote-mac "$REMOTE_ROOT" "$TMP_ROOT/seed-repair-home" --herdr-session fm-remote --no-projects 2>&1) \
   || fail "seeding refused a host whose gaps the repair closed"$'\n'"$out"
 assert_present "$TMP_ROOT/seed-repair-home/.fm-secondmate-home" "the repaired host was never provisioned"
 assert_grep '- seed-repair ' "$TMP_ROOT/seed-parent/data/secondmates.md" "the repaired route was not registered"
-[ "$(cat "$DOCTOR_LOG")" = 'doctor-fixable -
-doctor-fixable --fix
-doctor-fixable -' ] || fail "the repaired seed did not re-check after its repair"$'\n'"$(cat "$DOCTOR_LOG")"
+[ "$(cat "$DOCTOR_LOG")" = 'doctor-fixable --herdr-session fm-remote
+doctor-fixable --fix --herdr-session fm-remote
+doctor-fixable --herdr-session fm-remote' ] || fail "the repaired seed did not re-check after its repair"$'\n'"$(cat "$DOCTOR_LOG")"
 pass "remote seeding proceeds once the repair closes every gap"
 
 # Provision and register the remote route from the captain-facing primary.
 out=$(FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
   FM_SECONDMATE_SCOPE='iOS implementation and Xcode validation' \
-  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$REMOTE_HOME" alpha)
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$REMOTE_HOME" --herdr-session fm-remote alpha)
 assert_contains "$out" "home=remote-mac:$REMOTE_HOME" "remote seed did not report the host-qualified home"
 assert_grep 'host: remote-mac; root:' "$PARENT/data/secondmates.md" "registry did not record the remote host dimension"
 assert_present "$REMOTE_HOME/.fm-secondmate-home" "remote provisioning did not publish the identity marker"
@@ -449,7 +466,7 @@ assert_grep "$REMOTE_HOME/state/parent-replies.status" "$REMOTE_HOME/data/charte
 assert_no_grep "$PARENT/state/ios.status" "$REMOTE_HOME/data/charter.md" "remote charter retained the inaccessible local status path"
 if FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
   FM_SECONDMATE_SCOPE='iOS implementation and Xcode validation' \
-  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$TMP_ROOT/other-home" alpha \
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$TMP_ROOT/other-home" --herdr-session fm-remote alpha \
   >/dev/null 2>&1; then
   fail "remote seed allowed an existing id to move to another home"
 fi
@@ -518,11 +535,13 @@ assert_no_grep '--session default' "$HERDR_LOG" "remote launch targeted the inte
 assert_grep 'window=remote:ios' "$PARENT/state/ios.meta" "parent metadata pretended the endpoint was local"
 assert_present "$PARENT/state/procevent/remote-reply-ios.source" "remote spawn did not arm its reply source"
 publish_healthy_watcher_identity "$PARENT/state" "$PARENT" "$ROOT/bin/fm-watch.sh"
-[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = alive ] \
+REMOTE_SESSION=$(sed -n 's/^remote_herdr_session=//p' "$PARENT/state/ios.meta")
+REMOTE_TARGET=$(sed -n 's/^remote_target=//p' "$PARENT/state/ios.meta")
+[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios "$REMOTE_SESSION" "$REMOTE_TARGET")" = alive ] \
   || fail "remote endpoint was not projected alive from its own host"
 # Herdr reports a native agent state, so the delivery observation resolves
 # without the rendered-output fallback a tmux endpoint needs.
-[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh observe ios)" = idle ] \
+[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh observe ios "$REMOTE_SESSION" "$REMOTE_TARGET")" = idle ] \
   || fail "remote endpoint delivery observation did not execute on its own host"
 pass "remote spawn launches on the remote-local backend and records a host-qualified route"
 
@@ -535,15 +554,15 @@ awk -v pane="$legacy_pane" '
   { print }
 ' "$TMP_ROOT/remote-ios-before-default-session.meta" > "$remote_route_meta"
 cp "$HERDR_LOG" "$TMP_ROOT/herdr-before-default-session.log"
-[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios 2>/dev/null)" = unverified ] \
+[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios "$REMOTE_SESSION" "$REMOTE_TARGET" 2>/dev/null)" = unverified ] \
   || fail "legacy default-session metadata was not classified unverified"
-if remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh route ios >/dev/null 2>&1 \
-  || remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh send ios probe >/dev/null 2>&1 \
-  || remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh key ios Enter >/dev/null 2>&1 \
-  || remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh capture ios >/dev/null 2>&1 \
-  || remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh observe ios >/dev/null 2>&1 \
-  || remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh retire ios --force >/dev/null 2>&1 \
-  || remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh launch ios codex - - herdr >/dev/null 2>&1; then
+if remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh route ios "$REMOTE_SESSION" "$REMOTE_TARGET" >/dev/null 2>&1 \
+  || remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh send ios "$REMOTE_SESSION" "$REMOTE_TARGET" probe >/dev/null 2>&1 \
+  || remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh key ios "$REMOTE_SESSION" "$REMOTE_TARGET" Enter >/dev/null 2>&1 \
+  || remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh capture ios "$REMOTE_SESSION" "$REMOTE_TARGET" >/dev/null 2>&1 \
+  || remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh observe ios "$REMOTE_SESSION" "$REMOTE_TARGET" >/dev/null 2>&1 \
+  || remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh retire ios "$REMOTE_SESSION" "$REMOTE_TARGET" --force >/dev/null 2>&1 \
+  || remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh launch ios codex - - herdr "$REMOTE_SESSION" "$REMOTE_TARGET" >/dev/null 2>&1; then
   fail "legacy default-session metadata remained operational"
 fi
 cmp -s "$TMP_ROOT/herdr-before-default-session.log" "$HERDR_LOG" \
@@ -555,7 +574,7 @@ awk -v pane="$legacy_pane" '
   /^window=/ { print "window=default:" pane; next }
   { print }
 ' "$TMP_ROOT/remote-ios-before-default-session.meta" > "$remote_route_meta"
-[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios 2>/dev/null)" = unverified ] \
+[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios "$REMOTE_SESSION" "$REMOTE_TARGET" 2>/dev/null)" = unverified ] \
   || fail "mismatched fm-remote target was not classified unverified"
 cmp -s "$TMP_ROOT/herdr-before-default-session.log" "$HERDR_LOG" \
   || fail "mismatched fm-remote target caused a Herdr operation"
@@ -601,7 +620,7 @@ EOF
 cp "$remote_route_meta" "$TMP_ROOT/remote-ios-legacy-before-refusal.meta"
 printf 'fm-ios|%s\n' "$REMOTE_HOME" > "$TMUX_STATE"
 set +e
-remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh launch ios codex - - herdr \
+remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh launch ios codex - - herdr "$REMOTE_SESSION" "$REMOTE_TARGET" \
   > "$TMP_ROOT/legacy-alive-refusal.out" 2>&1
 legacy_alive_rc=$?
 set -e
@@ -616,6 +635,124 @@ cmp -s "$TMP_ROOT/registry-before-nonherdr.md" "$PARENT/data/secondmates.md" \
 mv -f "$TMP_ROOT/remote-ios-before-legacy.meta" "$remote_route_meta"
 rm -f "$TMUX_STATE"
 pass "non-herdr remote endpoints are refused without changing either route"
+
+# An operator-visible route uses the already-running default session, creates
+# its own labeled workspace there, and keeps every later operation bound to the
+# exact parent-recorded pane. A stopped default session must not be auto-started
+# or redirected to fm-remote.
+VISIBLE_HOME="$TMP_ROOT/visible-home"
+out=$(FM_SECONDMATE_CHARTER='Visible device-work charter.' \
+  FM_SECONDMATE_SCOPE='operator-visible device and capture work' \
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" visible remote-mac "$REMOTE_ROOT" \
+  "$VISIBLE_HOME" --herdr-session visible-default --no-projects)
+assert_contains "$out" "home=remote-mac:$VISIBLE_HOME" "visible route seed did not report its host-qualified home"
+assert_grep 'herdr-session: default' "$PARENT/data/secondmates.md" \
+  "visible route did not persist its default-session pin"
+
+printf 'default\n' > "$HERDR_STATE.stopped-session"
+cp "$HERDR_LOG" "$TMP_ROOT/herdr-before-stopped-visible.log"
+set +e
+remote_env "$ROOT/bin/fm-spawn.sh" visible --secondmate > "$TMP_ROOT/stopped-visible.out" 2>&1
+stopped_visible_rc=$?
+set -e
+[ "$stopped_visible_rc" -ne 0 ] || fail "visible launch auto-started a stopped default session"
+assert_grep "requires an operator-owned visible session" "$TMP_ROOT/stopped-visible.out" \
+  "stopped visible launch did not explain its fail-closed boundary"
+cmp -s "$TMP_ROOT/herdr-before-stopped-visible.log" "$HERDR_LOG" \
+  || assert_no_grep 'server .*--session default' "$HERDR_LOG" \
+    "stopped visible launch tried to start the default session"
+assert_absent "$PARENT/state/visible.meta" "stopped visible launch published parent endpoint metadata"
+rm -f "$HERDR_STATE.stopped-session"
+
+"$REMOTE_ROOT/bin/herdr" workspace create --cwd "$TMP_ROOT" --label personal --no-focus --session default >/dev/null
+PERSONAL_WORKSPACE=$(jq -r '.workspaces[] | select(.label == "personal") | .workspace_id' "$HERDR_STATE")
+[ -n "$PERSONAL_WORKSPACE" ] || fail "the personal-workspace fixture was not created"
+remote_env "$ROOT/bin/fm-spawn.sh" visible --secondmate >/dev/null
+VISIBLE_SESSION=$(sed -n 's/^remote_herdr_session=//p' "$PARENT/state/visible.meta")
+VISIBLE_TARGET=$(sed -n 's/^remote_target=//p' "$PARENT/state/visible.meta")
+[ "$VISIBLE_SESSION" = default ] || fail "visible route did not record the default session"
+case "$VISIBLE_TARGET" in default:?*) ;; *) fail "visible route did not record an exact default-session pane" ;; esac
+grep -E 'workspace create .*--label 2ndmate-visible .*--session default' "$HERDR_LOG" >/dev/null \
+  || fail "visible launch did not create its labeled default-session workspace"$'\n'"$(tail -n 30 "$HERDR_LOG")"
+grep -E 'tab create .*--label fm-visible .*--session default' "$HERDR_LOG" >/dev/null \
+  || fail "visible launch did not create its labeled task pane"$'\n'"$(tail -n 30 "$HERDR_LOG")"
+[ "$(jq -r --arg ws "$PERSONAL_WORKSPACE" '[.workspaces[] | select(.workspace_id == $ws)] | length' "$HERDR_STATE")" = 1 ] \
+  || fail "visible launch hijacked or removed the personal workspace"
+
+cp "$HERDR_LOG" "$TMP_ROOT/herdr-before-visible-mismatch.log"
+if remote_env "$ROOT/bin/fm-on.sh" visible fm-remote-secondmate-control.sh capture \
+  visible fm-remote "$VISIBLE_TARGET" 20 >/dev/null 2>&1; then
+  fail "visible endpoint accepted a mismatched fm-remote session"
+fi
+cmp -s "$TMP_ROOT/herdr-before-visible-mismatch.log" "$HERDR_LOG" \
+  || fail "mismatched visible access reached Herdr"
+
+remote_env "$ROOT/bin/fm-teardown.sh" visible >/dev/null
+assert_absent "$VISIBLE_HOME" "visible retirement did not remove the remote home"
+assert_no_grep '- visible ' "$PARENT/data/secondmates.md" "visible retirement kept its registry route"
+[ "$(jq -r --arg ws "$PERSONAL_WORKSPACE" '[.workspaces[] | select(.workspace_id == $ws)] | length' "$HERDR_STATE")" = 1 ] \
+  || fail "visible retirement removed the personal workspace"
+[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios "$REMOTE_SESSION" "$REMOTE_TARGET")" = alive ] \
+  || fail "visible retirement disturbed the background remote secondmate"
+assert_no_grep 'session stop' "$HERDR_LOG" "visible retirement stopped a shared Herdr session"
+assert_no_grep 'server stop' "$HERDR_LOG" "visible retirement stopped a Herdr server"
+pass "visible default launch, exact-pane control, and retirement preserve personal and background work"
+
+# Session selection itself is the operator contract: the ThinkPad route defaults
+# to the visible session, every other new remote route must choose explicitly,
+# and an already-pinned route never migrates as a side effect of re-seeding.
+registry_before_selection=$(cat "$PARENT/data/secondmates.md")
+: > "$DOCTOR_LOG"
+set +e
+out=$(FM_SECONDMATE_CHARTER='Unpinned charter.' FM_SECONDMATE_SCOPE='unpinned work' \
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" unpinned remote-mac "$REMOTE_ROOT" \
+  "$TMP_ROOT/unpinned-home" --no-projects 2>&1)
+unpinned_rc=$?
+set -e
+[ "$unpinned_rc" -ne 0 ] || fail "a new non-thinkpad remote route was seeded without an explicit session"
+assert_contains "$out" 'require --herdr-session visible-default or --herdr-session fm-remote' \
+  "the unpinned refusal did not name the explicit session choice"
+[ ! -s "$DOCTOR_LOG" ] || fail "an unpinned remote seed reached the host"$'\n'"$(cat "$DOCTOR_LOG")"
+assert_absent "$TMP_ROOT/unpinned-home" "an unpinned remote seed provisioned a home"
+[ "$(cat "$PARENT/data/secondmates.md")" = "$registry_before_selection" ] \
+  || fail "an unpinned remote seed changed the registry"
+
+# The ThinkPad alias needs no flag: it resolves to the visible default session
+# and carries that exact selection into the readiness gate.
+: > "$DOCTOR_LOG"
+set +e
+out=$(FM_SECONDMATE_CHARTER='ThinkPad charter.' FM_SECONDMATE_SCOPE='thinkpad device work' \
+  FM_FAKE_SSH_MODE=doctor-human FM_TAILSCALE_BIN="$FAKEBIN/fake-tailscale" \
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" thinkpad fm-thinkpad "$REMOTE_ROOT" \
+  "$TMP_ROOT/thinkpad-home" --no-projects 2>&1)
+thinkpad_rc=$?
+set -e
+[ "$thinkpad_rc" -ne 0 ] || fail "the deliberately unready ThinkPad fixture reported a ready host"
+[ "$(cat "$DOCTOR_LOG")" = 'doctor-human --herdr-session default
+doctor-human --fix --herdr-session default
+doctor-human --herdr-session default' ] \
+  || fail "an unflagged fm-thinkpad seed did not gate on the visible default session"$'\n'"$(cat "$DOCTOR_LOG")"
+assert_no_grep '- thinkpad ' "$PARENT/data/secondmates.md" "the unready ThinkPad route stayed registered"
+
+# Re-seeding the fm-remote-pinned route with the other session must refuse
+# rather than migrate it, and must leave the recorded pin and home intact.
+: > "$DOCTOR_LOG"
+set +e
+out=$(FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
+  FM_SECONDMATE_SCOPE='iOS implementation and Xcode validation' \
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$REMOTE_HOME" \
+  --herdr-session visible-default alpha 2>&1)
+migrate_rc=$?
+set -e
+[ "$migrate_rc" -ne 0 ] || fail "re-seeding silently migrated a pinned route to another session"
+assert_contains "$out" 'already pinned to Herdr session fm-remote' \
+  "the migration refusal did not name the recorded session"
+[ ! -s "$DOCTOR_LOG" ] || fail "a refused session migration reached the host"$'\n'"$(cat "$DOCTOR_LOG")"
+[ "$(cat "$PARENT/data/secondmates.md")" = "$registry_before_selection" ] \
+  || fail "a refused session migration changed the registry"
+assert_grep 'remote_herdr_session=fm-remote' "$PARENT/state/ios.meta" \
+  "a refused session migration changed the recorded endpoint pin"
+pass "session selection defaults on fm-thinkpad, stays explicit elsewhere, and never silently migrates"
 
 rm -f "$TMP_ROOT/inherit.entered" "$TMP_ROOT/inherit.release" "$TMP_ROOT/inherit.payload"
 cat > "$PARENT/data/captain-shared.md" <<'EOF'
@@ -831,19 +968,19 @@ pass "remote update imports and fast-forwards the persistent home on its configu
 
 rm -f "$TMP_ROOT/doctor.repaired"
 : > "$DOCTOR_LOG"
-[ "$(FM_FAKE_SSH_MODE=doctor-fixable remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = unreadable ] \
+[ "$(FM_FAKE_SSH_MODE=doctor-fixable remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios "$REMOTE_SESSION" "$REMOTE_TARGET")" = unreadable ] \
   || fail "the stopped-server fixture did not make the pre-repair endpoint probe unreadable"
 launches_before_repair=$(grep -c '^tab create' "$HERDR_LOG" || true)
 BOOT_REPAIRED=$(FM_FAKE_SSH_MODE=doctor-fixable remote_env "$ROOT/bin/fm-bootstrap.sh")
-[ "$(cat "$DOCTOR_LOG")" = 'doctor-fixable -
-doctor-fixable --fix
-doctor-fixable -' ] || fail "liveness did not check, repair, and re-check readiness before probing"$'\n'"$(cat "$DOCTOR_LOG")"
+[ "$(cat "$DOCTOR_LOG")" = 'doctor-fixable --herdr-session fm-remote
+doctor-fixable --fix --herdr-session fm-remote
+doctor-fixable --herdr-session fm-remote' ] || fail "liveness did not check, repair, and re-check readiness before probing"$'\n'"$(cat "$DOCTOR_LOG")"
 assert_not_contains "$BOOT_REPAIRED" 'SECONDMATE_LIVENESS: secondmate ios:' \
   "successful pre-probe readiness repair produced a liveness failure"
 launches_after_repair=$(grep -c '^tab create' "$HERDR_LOG" || true)
 [ "$launches_before_repair" -eq "$launches_after_repair" ] \
   || fail "readiness repair introduced a new remote relaunch point"
-[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios)" = alive ] \
+[ "$(remote_env "$ROOT/bin/fm-on.sh" ios fm-remote-secondmate-control.sh state ios "$REMOTE_SESSION" "$REMOTE_TARGET")" = alive ] \
   || fail "the endpoint was not probed successfully after readiness repair"
 pass "startup repairs remote readiness before probing without relaunching"
 

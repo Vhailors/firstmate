@@ -29,6 +29,12 @@
 # is doing, so a legitimately long-but-alive remote command is never falsely
 # killed. FM_SSH_ALIVE_INTERVAL and FM_SSH_ALIVE_COUNT_MAX override the
 # defaults; the worst-case detection window is roughly interval * count.
+# The standing ThinkPad route name fm-thinkpad is a Tailscale identity, not an
+# ordinary LAN fallback. Before SSH, fm-on requires the local tailscale CLI to
+# resolve and ping that peer once. A failed peer check stops before SSH, so an
+# alias with stale alternate addressing cannot silently become the route.
+# FM_TAILSCALE_BIN overrides which tailscale CLI that check runs, for an
+# account whose CLI is off PATH and for tests; it must be executable.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -91,6 +97,22 @@ for configured_path in "$ROOT" "$HOME_PATH"; do
   case "/$configured_path/" in */../*|*/./*) die "configured remote root or home contains traversal components" ;; esac
   case "$configured_path" in *'//'*) die "configured remote root or home contains an empty path component" ;; esac
 done
+
+if [ "$HOST" = fm-thinkpad ]; then
+  if [ -n "${FM_TAILSCALE_BIN:-}" ]; then
+    TAILSCALE_BIN=$FM_TAILSCALE_BIN
+    [ -x "$TAILSCALE_BIN" ] \
+      || die "configured FM_TAILSCALE_BIN is not executable: $TAILSCALE_BIN"
+  else
+    TAILSCALE_BIN=$(command -v tailscale 2>/dev/null || true)
+    [ -n "$TAILSCALE_BIN" ] && [ -x "$TAILSCALE_BIN" ] \
+      || die "Tailscale CLI is unavailable; install or start Tailscale on the primary before using fm-thinkpad"
+  fi
+  if ! TAILSCALE_OUT=$("$TAILSCALE_BIN" ping -c 1 --timeout 5s "$HOST" 2>&1); then
+    [ -z "$TAILSCALE_OUT" ] || printf '%s\n' "$TAILSCALE_OUT" >&2
+    die "Tailscale peer fm-thinkpad is unreachable; bring the laptop and Tailscale online, then verify 'tailscale ping fm-thinkpad'"
+  fi
+fi
 
 ROOT_B64=$(printf '%s' "$ROOT" | encode_base64)
 HOME_B64=$(printf '%s' "$HOME_PATH" | encode_base64)
