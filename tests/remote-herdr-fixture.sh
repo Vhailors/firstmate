@@ -36,23 +36,29 @@ STATE='$state'
 LOG='$log'
 SEND_FAIL='$send_fail'
 SOCKET='$socket'
+STOPPED_SESSION='$state.stopped-session'
 SH
   cat >> "$script" <<'SH'
 printf '%s\n' "$*" >> "$LOG"
 jq_state() { jq "$@" "$STATE"; }
 save() { tmp="$STATE.tmp.$$"; cat > "$tmp" && mv "$tmp" "$STATE"; }
-ws=""; label=""; cwd=""
+ws=""; label=""; cwd=""; session="default"
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   case "${args[$i]}" in
     --workspace) ws=${args[$((i+1))]:-} ;;
     --label) label=${args[$((i+1))]:-} ;;
     --cwd) cwd=${args[$((i+1))]:-} ;;
+    --session) session=${args[$((i+1))]:-} ;;
   esac
 done
 case "${1:-} ${2:-}" in
   "status --json")
-    printf '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true}}\n' ;;
+    if [ "$(cat "$STOPPED_SESSION" 2>/dev/null || true)" = "$session" ]; then
+      printf '{"client":{"version":"0.7.5","protocol":16},"server":{"running":false}}\n'
+    else
+      printf '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true}}\n'
+    fi ;;
   "server "*|"server") : ;;
   "workspace list") jq_state '{result:{workspaces:.workspaces}}' ;;
   "workspace create")

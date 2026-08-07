@@ -132,6 +132,8 @@ fm_send_resolve_target() {  # <raw-target>
   TARGET_META=""
   TARGET_SELECTOR=""
   TARGET_REMOTE_ID=""
+  TARGET_REMOTE_SESSION=""
+  TARGET_REMOTE_TARGET=""
   RESOLUTION_TRIED=""
 
   meta=$(fm_backend_meta_for_selector "$raw" "$STATE" 2>/dev/null || true)
@@ -145,6 +147,18 @@ fm_send_resolve_target() {  # <raw-target>
       EXPECTED_LABEL="fm-$id"
       TARGET_SELECTOR=1
       TARGET_REMOTE_ID=$id
+      TARGET_REMOTE_SESSION=$(fm_meta_get "$meta" remote_herdr_session)
+      TARGET_REMOTE_TARGET=$(fm_meta_get "$meta" remote_target)
+      case "$TARGET_REMOTE_SESSION" in default|fm-remote) ;; *)
+        echo "error: remote metadata $meta has an invalid Herdr session pin: ${TARGET_REMOTE_SESSION:-missing}" >&2
+        return 1
+        ;;
+      esac
+      case "$TARGET_REMOTE_TARGET" in "$TARGET_REMOTE_SESSION":?*) ;; *)
+        echo "error: remote metadata $meta has no exact target in Herdr session $TARGET_REMOTE_SESSION" >&2
+        return 1
+        ;;
+      esac
       RESOLUTION_TRIED="meta=$meta; placement=remote"
       return 0
     fi
@@ -261,7 +275,8 @@ fi
 
 if [ "${1:-}" = "--key" ]; then
   if [ "$TARGET_BACKEND" = remote ]; then
-    if ! "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh key "$TARGET_REMOTE_ID" "$2" < /dev/null; then
+    if ! "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh key \
+      "$TARGET_REMOTE_ID" "$TARGET_REMOTE_SESSION" "$TARGET_REMOTE_TARGET" "$2" < /dev/null; then
       echo "error: key '$2' not sent to remote secondmate $TARGET_REMOTE_ID; completion may be unknown" >&2
       exit 1
     fi
@@ -318,7 +333,8 @@ else
   # verdict preserves the loud refusal boundary.
   send_rc=0
   if [ "$TARGET_BACKEND" = remote ]; then
-    if "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh send "$TARGET_REMOTE_ID" "$MESSAGE" < /dev/null >/dev/null; then
+    if "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh send \
+      "$TARGET_REMOTE_ID" "$TARGET_REMOTE_SESSION" "$TARGET_REMOTE_TARGET" "$MESSAGE" < /dev/null >/dev/null; then
       verdict=empty
     else
       send_rc=$?

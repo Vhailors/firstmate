@@ -85,7 +85,7 @@ done
 host=$1
 entry=$2
 shift 2
-[ "$host" = remote-mac ] || exit 91
+case "$host" in remote-mac|fm-thinkpad) ;; *) exit 91 ;; esac
 [ "$entry" = fm-remote-entrypoint.sh ] || exit 92
 case "${FM_FAKE_SSH_MODE:-normal}" in
   unreachable) exit 255 ;;
@@ -97,6 +97,13 @@ case "${FM_FAKE_SSH_MODE:-normal}" in
 esac
 SH
 chmod +x "$FAKEBIN/fake-ssh"
+
+cat > "$FAKEBIN/fake-tailscale" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_FAKE_TAILSCALE_LOG"
+[ "${FM_FAKE_TAILSCALE_REACHABLE:-1}" = 1 ]
+SH
+chmod +x "$FAKEBIN/fake-tailscale"
 
 write_registry() {
   cat > "$LOCAL_HOME/data/secondmates.md" <<EOF
@@ -458,6 +465,32 @@ if "$REMOTE_ROOT/bin/fm-remote-entrypoint.sh" 1 "$traversal_root_b64" "$home_b64
   fail "the fixed entrypoint accepted traversal in the configured root"
 fi
 pass "the fixed entrypoint refuses incompatible protocols and unsafe roots"
+
+cat > "$LOCAL_HOME/data/secondmates.md" <<EOF
+- ios - visible iOS delivery (host: fm-thinkpad; root: $REMOTE_ROOT; home: $REMOTE_HOME; herdr-session: default; scope: operator-visible iOS work; projects: alpha; added 2026-08-02)
+EOF
+TAILSCALE_LOG="$TMP_ROOT/tailscale.log"
+: > "$TAILSCALE_LOG"
+: > "$SSH_COUNT"
+FM_TAILSCALE_BIN="$FAKEBIN/fake-tailscale" FM_FAKE_TAILSCALE_LOG="$TAILSCALE_LOG" \
+  fm_on ios fm-probe-two.sh >/dev/null
+assert_grep 'ping --c 1 --timeout 5s fm-thinkpad' "$TAILSCALE_LOG" \
+  "fm-thinkpad did not pass a bounded Tailscale reachability probe"
+[ "$(cat "$SSH_COUNT")" -eq 1 ] || fail "a reachable fm-thinkpad route did not continue to SSH"
+
+ssh_before_unreachable=$(cat "$SSH_COUNT")
+set +e
+tailscale_out=$(FM_TAILSCALE_BIN="$FAKEBIN/fake-tailscale" FM_FAKE_TAILSCALE_LOG="$TAILSCALE_LOG" \
+  FM_FAKE_TAILSCALE_REACHABLE=0 fm_on ios fm-probe-two.sh 2>&1)
+tailscale_rc=$?
+set -e
+[ "$tailscale_rc" -eq 1 ] || fail "an unreachable fm-thinkpad Tailscale route was accepted"
+assert_contains "$tailscale_out" 'Tailscale peer fm-thinkpad is unreachable' \
+  "the Tailscale refusal did not name the unreachable peer"
+[ "$(cat "$SSH_COUNT")" -eq "$ssh_before_unreachable" ] \
+  || fail "a failed Tailscale preflight still launched SSH"
+write_registry
+pass "fm-thinkpad is discovered through Tailscale and fails closed before SSH when unreachable"
 
 cat >> "$LOCAL_HOME/data/secondmates.md" <<EOF
 - build - build delivery (host: remote-mac; root: $REMOTE_ROOT; home: $TMP_ROOT/other-remote-home; scope: build work; projects: beta; added 2026-08-02)

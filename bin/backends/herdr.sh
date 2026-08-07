@@ -1243,6 +1243,10 @@ fm_backend_herdr_server_ensure() {  # <session>
   local session=$1 running out i
   running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
   [ "$running" = "true" ] && return 0
+  if [ "${FM_BACKEND_HERDR_REQUIRE_RUNNING:-0}" = 1 ]; then
+    echo "error: herdr session '$session' is not already running; this route requires an operator-owned visible session and will not start one automatically" >&2
+    return 1
+  fi
   ( fm_backend_herdr_cli "$session" server >/dev/null 2>&1 & ) || return 1
   for i in $(seq 1 20); do
     running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)

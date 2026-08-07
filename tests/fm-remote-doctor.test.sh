@@ -131,6 +131,7 @@ EOF
     exit 0
     ;;
   kickstart)
+    case "${2:-}" in -k) label=${3##*/} ;; esac
     [ ! -f "$FM_FAKE_STATE/kickstart-fail" ] || { printf 'Kickstart failed: service unavailable\n' >&2; exit 6; }
     case "$label" in
       dev.firstmate.remote-job) : ;;
@@ -343,6 +344,41 @@ assert_no_grep "gui/$(id -u)/$INTERACTIVE_LABEL$" "$CASE_LAUNCHCTL_LOG" \
 assert_no_dangerous_calls "the repair reached for auto-login, FileVault, or the keychain"
 pass "--fix installs the dedicated fm-remote launch agent without touching default"
 
+# --- visible default is required but never started or repaired over SSH ------
+
+new_case Darwin with-herdr gui
+mkdir -p "$(dirname "$CASE_INTERACTIVE_PLIST")"
+printf 'operator-owned default session\n' > "$CASE_INTERACTIVE_PLIST"
+cp "$CASE_INTERACTIVE_PLIST" "$CASE_STATE/interactive-before.plist"
+touch "$CASE_STATE/interactive-loaded"
+doctor --fix --herdr-session default
+expect_code 1 "$DOCTOR_RC" "--fix reported a stopped visible default session ready"$'\n'"$DOCTOR_OUT"
+assert_contains "$DOCTOR_OUT" 'herdr_session=default' "doctor did not report the selected visible session"
+assert_contains "$DOCTOR_OUT" 'check launchagent=skip: the operator owns the visible default Herdr session' \
+  "doctor tried to own a launch agent for the visible default session"
+assert_contains "$DOCTOR_OUT" 'check herdr-server=human: the operator-visible Herdr session default is not running' \
+  "a stopped visible session was not a human blocker"
+assert_contains "$DOCTOR_OUT" 'Firstmate never starts it over SSH' \
+  "the visible-session blocker did not explain the no-SSH-start boundary"
+assert_not_contains "$DOCTOR_OUT" 'fix herdr-server=applied:' \
+  "--fix claimed to start the operator-visible session"
+assert_absent "$CASE_PLIST" "visible readiness installed the fm-remote launch agent"
+[ "$(cat "$CASE_HERDR_RUNNING")" = false ] || fail "visible readiness started a stopped default server"
+cmp -s "$CASE_STATE/interactive-before.plist" "$CASE_INTERACTIVE_PLIST" \
+  || fail "visible readiness rewrote the operator's default launch agent"
+assert_present "$CASE_STATE/interactive-loaded" "visible readiness unloaded the operator's default launch agent"
+
+printf 'true\n' > "$CASE_HERDR_RUNNING"
+doctor --herdr-session default
+expect_code 0 "$DOCTOR_RC" "a running visible default session was not accepted"
+assert_contains "$DOCTOR_OUT" 'check herdr-server=ok: session default is running' \
+  "doctor did not verify the running visible default session"
+assert_absent "$CASE_PLIST" "visible readiness created a background launch agent after the session became healthy"
+pass "visible default readiness fails closed and never starts or mutates the operator session"
+
+new_case Darwin with-herdr gui
+doctor --fix
+expect_code 0 "$DOCTOR_RC" "the idempotence fixture could not initialize a ready fm-remote host"
 PLIST_BEFORE=$(cat "$CASE_PLIST")
 : > "$CASE_LAUNCHCTL_LOG"
 doctor --fix

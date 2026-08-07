@@ -196,7 +196,7 @@ remote_env() {
 
 FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
   FM_SECONDMATE_SCOPE='iOS implementation and Xcode validation' \
-  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$REMOTE_HOME" alpha \
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$REMOTE_HOME" --herdr-session fm-remote alpha \
   >/dev/null || fail "real remote secondmate seeding failed"
 
 # --- the durable record itself: the fundamental part of the fix -------------
@@ -236,7 +236,7 @@ done
 run_child_teardown() { # <extra env assignments...>
   local out rc=0
   write_child_meta
-  out=$(env "$@" PATH="$TMP_ROOT/childfake:$PATH" \
+  out=$(/usr/bin/env "$@" PATH="$TMP_ROOT/childfake:$PATH" \
     FM_HOME="$REMOTE_HOME" FM_STATE_OVERRIDE="$REMOTE_HOME/state" \
     FM_DATA_OVERRIDE="$REMOTE_HOME/data" FM_CONFIG_OVERRIDE="$REMOTE_HOME/config" \
     "$REMOTE_ROOT/bin/fm-teardown.sh" work-child 2>&1) || rc=$?

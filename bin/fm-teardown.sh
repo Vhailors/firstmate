@@ -270,20 +270,26 @@ remote_outbox_cleanup() {
 }
 
 remote_secondmate_teardown() {
-  local remote_host remote_root remote_home kind route_host route_root route_home out rc tmp rec phase task_id
+  local remote_host remote_root remote_home remote_session remote_target kind route_host route_root route_home route_session out rc tmp rec phase task_id
   remote_host=$(fm_meta_get "$META" remote_host)
   [ -n "$remote_host" ] || return 3
   kind=$(fm_meta_get "$META" kind)
   [ "$kind" = secondmate ] || { echo "REFUSED: remote placement metadata is valid only for a secondmate" >&2; return 1; }
   remote_root=$(fm_meta_get "$META" remote_root)
   remote_home=$(fm_meta_get "$META" home)
+  remote_session=$(fm_meta_get "$META" remote_herdr_session)
+  remote_target=$(fm_meta_get "$META" remote_target)
   [ -n "$remote_root" ] && [ -n "$remote_home" ] || { echo "REFUSED: remote secondmate metadata is incomplete" >&2; return 1; }
+  case "$remote_session" in default|fm-remote) ;; *) echo "REFUSED: remote secondmate metadata has an invalid Herdr session" >&2; return 1 ;; esac
+  case "$remote_target" in "$remote_session":?*) ;; *) echo "REFUSED: remote secondmate metadata has no exact target in its Herdr session" >&2; return 1 ;; esac
   secondmate_registry_line_for_id "$SECONDMATE_REG" "$ID" || { echo "REFUSED: remote secondmate route is missing or ambiguous" >&2; return 1; }
   [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ] || { echo "REFUSED: secondmate registry route is not remote" >&2; return 1; }
   route_host=$SECONDMATE_REGISTRY_HOST
   route_root=$SECONDMATE_REGISTRY_ROOT
   route_home=$SECONDMATE_REGISTRY_HOME
+  route_session=$SECONDMATE_REGISTRY_HERDR_SESSION
   [ "$route_host" = "$remote_host" ] && [ "$route_root" = "$remote_root" ] && [ "$route_home" = "$remote_home" ] \
+    && [ "$route_session" = "$remote_session" ] \
     || { echo "REFUSED: remote secondmate metadata does not match its registry route" >&2; return 1; }
   [ -z "$FORCE" ] || [ "$FORCE" = --force ] || { echo "error: invalid teardown option: $FORCE" >&2; return 2; }
   remote_recovery_paths_validate initial || return 1
@@ -309,9 +315,11 @@ remote_secondmate_teardown() {
   }
   "$FM_ROOT/bin/fm-guard.sh" || true
   if [ "$FORCE" = --force ]; then
-    if out=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-secondmate-control.sh retire "$ID" --force < /dev/null 2>&1); then rc=0; else rc=$?; fi
+    if out=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-secondmate-control.sh retire \
+      "$ID" "$remote_session" "$remote_target" --force < /dev/null 2>&1); then rc=0; else rc=$?; fi
   else
-    if out=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-secondmate-control.sh retire "$ID" < /dev/null 2>&1); then rc=0; else rc=$?; fi
+    if out=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-secondmate-control.sh retire \
+      "$ID" "$remote_session" "$remote_target" < /dev/null 2>&1); then rc=0; else rc=$?; fi
   fi
   if [ "$rc" -ne 0 ]; then
     [ -z "$out" ] || printf '%s\n' "$out" >&2

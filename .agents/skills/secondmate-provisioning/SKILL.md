@@ -27,14 +27,16 @@ A local route uses:
 A whole-home remote route uses:
 
 ```markdown
-- <id> - <one-sentence charter summary> (host: <ssh-alias>; root: <absolute-remote-code-root>; home: <absolute-remote-home>; scope: <natural-language responsibility>; projects: <project-a>, <project-b>; added <date>)
+- <id> - <one-sentence charter summary> (host: <ssh-alias>; root: <absolute-remote-code-root>; home: <absolute-remote-home>; herdr-session: <default|fm-remote>; scope: <natural-language responsibility>; projects: <project-a>, <project-b>; added <date>)
 ```
 
 Each registry entry stays concise and single-line: the summary is one sentence naming the durable charter, `scope:` is the natural-language intake responsibility, `projects:` is the non-exclusive clone list, and any extra prose is limited to genuinely domain-specific hard rules that change routing or safety for that secondmate.
 Natural-language summary and `scope:` text may contain parentheses and semicolons; keep the generated `(home: ...; scope: ...; projects: ...; added ...)` suffix intact so operational consumers resolve its explicit field markers.
 The `home:` path points to the seeded home containing `data/charter.md`; no extra registry pointer field is needed.
 For a remote route, `host:` is an OpenSSH config alias and `root:` is that host's separate tracked Firstmate code root.
-A remote second-mate agent always runs on the Herdr backend and every seed, launch, and liveness relaunch first gates its host on `bin/fm-remote-doctor.sh` readiness, so an unready host refuses with that doctor's own gap text rather than half-creating a route; the workers that second mate supervises keep the home's ordinary backend selection.
+The `herdr-session:` field pins the remote second-mate agent to `default` for operator-visible work or `fm-remote` for explicitly background fleet work.
+A legacy remote route without that field resolves to `fm-remote` and is never silently migrated.
+A remote second-mate agent always runs on the Herdr backend and every seed, launch, and liveness relaunch first gates its host on `bin/fm-remote-doctor.sh` readiness for the pinned session, so an unready host refuses with that doctor's own gap text rather than half-creating a route; the workers that second mate supervises keep the home's ordinary backend selection.
 This release places whole secondmate homes remotely and never individual workers.
 [`docs/remote-secondmates.md`](../../../docs/remote-secondmates.md) owns current operator setup and transport behavior.
 The home-seeded `data/charter.md` is the sole owner of boilerplate idle-by-default behavior, the normal delegation lifecycle, and standard escalation contracts, so point to that charter rather than restating those contracts in the registry entry.
@@ -69,11 +71,14 @@ bin/fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}
 Provision a whole remote home through its configured SSH host with:
 
 ```sh
-bin/fm-remote-home-seed.sh <id> <ssh-alias> <remote-root> <remote-home> {<project>...|--no-projects}
+bin/fm-remote-home-seed.sh <id> <ssh-alias> <remote-root> <remote-home> [--herdr-session <visible-default|fm-remote>] {<project>...|--no-projects}
 ```
 
 The remote command transfers a bounded charter and project-origin manifest, then the remote host clones its own Firstmate home and project origins.
 It never copies a project tree or the primary process environment.
+For a new `fm-thinkpad` route, omitting `--herdr-session` selects the visible `default` session.
+Every other new remote route must explicitly select `visible-default` or `fm-remote`.
+Re-seeding an existing route without the option preserves its recorded session, while requesting a different session refuses until the route is explicitly retired or migrated.
 Pass `--no-projects` in the project position to seed the project-less home described above; the same mutual-exclusion and fail-loud-on-omission rules apply.
 It may only seed a home with no project clones or project-registry entries, and refuses conversion of populated homes without changing them.
 `-` durably leases a fresh firstmate worktree via `treehouse get --lease` under the secondmate id.

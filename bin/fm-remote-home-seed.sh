@@ -2,7 +2,7 @@
 # Register and provision a whole secondmate home on an SSH-reachable host.
 #
 # Usage:
-#   fm-remote-home-seed.sh <id> <ssh-alias> <remote-root> <remote-home> {<project>...|--no-projects}
+#   fm-remote-home-seed.sh <id> <ssh-alias> <remote-root> <remote-home> [--herdr-session <visible-default|fm-remote>] {<project>...|--no-projects}
 #
 # The SSH alias must already reach a host whose non-interactive PATH exposes the
 # fixed fm-remote-entrypoint.sh from <remote-root>. The command records the
@@ -67,9 +67,25 @@ done
 case "$REMOTE_HOME/" in "$REMOTE_ROOT/"*) die "remote home must not be inside the remote code root" ;; esac
 case "$REMOTE_ROOT/" in "$REMOTE_HOME/"*) die "remote code root must not be inside the remote home" ;; esac
 
+REMOTE_HERDR_SESSION=
+REMOTE_HERDR_SESSION_SET=0
 NO_PROJECTS=0
 PROJECT_NAMES=()
-for arg in "$@"; do
+while [ "$#" -gt 0 ]; do
+  arg=$1
+  shift
+  if [ "$arg" = --herdr-session ]; then
+    [ "$REMOTE_HERDR_SESSION_SET" -eq 0 ] || die "--herdr-session may be specified only once"
+    [ "$#" -gt 0 ] || die "--herdr-session requires visible-default or fm-remote"
+    case "$1" in
+      visible-default|default) REMOTE_HERDR_SESSION=default ;;
+      fm-remote|background) REMOTE_HERDR_SESSION=fm-remote ;;
+      *) die "invalid remote Herdr session mode: $1 (expected visible-default or fm-remote)" ;;
+    esac
+    REMOTE_HERDR_SESSION_SET=1
+    shift
+    continue
+  fi
   if [ "$arg" = --no-projects ]; then
     NO_PROJECTS=1
   else
@@ -98,6 +114,20 @@ if [ -e "$REG" ] || [ -L "$REG" ]; then
       && [ "$SECONDMATE_REGISTRY_ROOT" = "$REMOTE_ROOT" ] \
       && [ "$SECONDMATE_REGISTRY_HOME" = "$REMOTE_HOME" ] \
       || die "secondmate $ID is already registered to a different local or remote home"
+    if [ "$REMOTE_HERDR_SESSION_SET" -eq 1 ] \
+      && [ "$SECONDMATE_REGISTRY_HERDR_SESSION" != "$REMOTE_HERDR_SESSION" ]; then
+      die "secondmate $ID is already pinned to Herdr session $SECONDMATE_REGISTRY_HERDR_SESSION; retire or explicitly migrate that route before changing sessions"
+    fi
+    [ "$REMOTE_HERDR_SESSION_SET" -eq 1 ] \
+      || REMOTE_HERDR_SESSION=$SECONDMATE_REGISTRY_HERDR_SESSION
+  fi
+fi
+
+if [ -z "$REMOTE_HERDR_SESSION" ]; then
+  if [ "$HOST" = fm-thinkpad ]; then
+    REMOTE_HERDR_SESSION=default
+  else
+    die "new remote routes outside fm-thinkpad require --herdr-session visible-default or --herdr-session fm-remote"
   fi
 fi
 
@@ -180,8 +210,8 @@ MANIFEST_BYTES=$(LC_ALL=C wc -c < "$TMP/manifest" | tr -d ' ')
 TODAY=$(date +%F)
 REG_TMP="$TMP/secondmates.next"
 if [ -f "$REG" ]; then grep -vE "^- $ID( |$)" "$REG" > "$REG_TMP" || true; else : > "$REG_TMP"; fi
-printf -- '- %s - %s (host: %s; root: %s; home: %s; scope: %s; projects: %s; added %s)\n' \
-  "$ID" "$SUMMARY" "$HOST" "$REMOTE_ROOT" "$REMOTE_HOME" "$SCOPE" "$PROJECTS_CSV" "$TODAY" >> "$REG_TMP"
+printf -- '- %s - %s (host: %s; root: %s; home: %s; herdr-session: %s; scope: %s; projects: %s; added %s)\n' \
+  "$ID" "$SUMMARY" "$HOST" "$REMOTE_ROOT" "$REMOTE_HOME" "$REMOTE_HERDR_SESSION" "$SCOPE" "$PROJECTS_CSV" "$TODAY" >> "$REG_TMP"
 mv -f -- "$REG_TMP" "$REG"
 if ! secondmate_registry_validate_bindings "$REG" secondmate_registry_path_key "$ID" "$REMOTE_HOME"; then
   if [ "$REG_EXISTED" -eq 1 ]; then cp "$TMP/registry.before" "$REG"; else rm -f -- "$REG"; fi
@@ -197,7 +227,7 @@ restore_registry_and_brief() {
 # created on that host. The doctor runs through the same fixed entrypoint as
 # every later call, so it sees the exact PATH the remote home will run under.
 set +e
-fm_remote_readiness_ensure "$SCRIPT_DIR" "$ID"
+fm_remote_readiness_ensure "$SCRIPT_DIR" "$ID" "$REMOTE_HERDR_SESSION"
 PREFLIGHT_RC=$?
 set -e
 if [ "$PREFLIGHT_RC" -ne 0 ]; then

@@ -160,7 +160,7 @@ meta_traceparent() { sed -n 's/^traceparent=//p' "$1"; }
 # Provision and register the remote route from the captain-facing primary.
 FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
   FM_SECONDMATE_SCOPE='iOS implementation and Xcode validation' \
-  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$REMOTE_HOME" --no-projects >/dev/null \
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$REMOTE_HOME" --herdr-session fm-remote --no-projects >/dev/null \
   || fail "remote seed did not provision the traced route"
 
 # --- disabled: the remote route must stay byte-identically untraced ----------
@@ -236,7 +236,7 @@ AMBIENT='00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab-bbbbbbbbbbbbbbbb-01'
 FM_SECONDMATE_CHARTER='Own the second build Mac.' \
   FM_SECONDMATE_SCOPE='second remote domain' \
   TRACEPARENT="$AMBIENT" \
-  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios2 remote-mac "$REMOTE_ROOT" "$SECOND_HOME" --no-projects >/dev/null \
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios2 remote-mac "$REMOTE_ROOT" "$SECOND_HOME" --herdr-session fm-remote --no-projects >/dev/null \
   || fail "second remote seed failed"
 reset_remote_herdr_fixture "$HERDR_STATE"
 : > "$HERDR_LOG"
