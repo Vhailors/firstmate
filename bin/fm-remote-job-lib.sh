@@ -861,7 +861,7 @@ fm_remote_job_start_linux_worker() { # <remote-root> <account-home>
     fi
     FM_REMOTE_JOB_REPAIRED=1
   fi
-  nohup env \
+  /usr/bin/nohup /usr/bin/env \
     HOME="$account_home" \
     FM_ROOT_OVERRIDE="$root" \
     FM_REMOTE_JOB_STATE_ROOT="$FM_REMOTE_JOB_STATE" \

@@ -15,11 +15,13 @@ ACCOUNT_HOME="$TMP_ROOT/account"
 STATE_ROOT="$TMP_ROOT/remote-jobs"
 RUNTIME_BIN="$TMP_ROOT/runtime-bin"
 FAKE_PERL_LOG="$TMP_ROOT/perl.log"
+FAKE_LAUNCH_LOG="$TMP_ROOT/launch-tools.log"
 REAL_GIT=$(command -v git)
 OTHER_PID=
 RECOVERY_WORKER_PID=
+FRESH_HEARTBEAT_SUPERVISOR_PIDS=
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
-trap 'if [ -n "$OTHER_PID" ]; then kill "$OTHER_PID" 2>/dev/null || true; fi; if [ -n "$RECOVERY_WORKER_PID" ]; then kill "$RECOVERY_WORKER_PID" 2>/dev/null || true; fi; if [ -f "$STATE_ROOT/worker.pid" ]; then kill "$(cat "$STATE_ROOT/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+trap 'if [ -n "$OTHER_PID" ]; then kill "$OTHER_PID" 2>/dev/null || true; fi; if [ -n "$RECOVERY_WORKER_PID" ]; then kill "$RECOVERY_WORKER_PID" 2>/dev/null || true; fi; for pid in $FRESH_HEARTBEAT_SUPERVISOR_PIDS; do kill "$pid" 2>/dev/null || true; done; if [ -f "$STATE_ROOT/worker.pid" ]; then kill "$(cat "$STATE_ROOT/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
 
 cp "$ROOT/bin/fm-remote-job-lib.sh" "$ROOT/bin/fm-remote-job-worker.sh" "$REMOTE_ROOT/bin/"
 printf 'fixture\n' > "$REMOTE_ROOT/AGENTS.md"
@@ -67,7 +69,14 @@ cat > "$RUNTIME_BIN/perl" <<'SH'
 printf 'invoked\n' >> "$FM_FAKE_PERL_LOG"
 exit 127
 SH
-chmod +x "$RUNTIME_BIN/perl"
+for tool in env nohup; do
+  cat > "$RUNTIME_BIN/$tool" <<'SH'
+#!/bin/bash
+printf '%s\n' "${0##*/}" >> "$FM_FAKE_LAUNCH_LOG"
+exit 0
+SH
+done
+chmod +x "$RUNTIME_BIN/perl" "$RUNTIME_BIN/env" "$RUNTIME_BIN/nohup"
 
 git -C "$REMOTE_ROOT" init -q -b main
 git -C "$REMOTE_ROOT" config user.email test@example.com
@@ -104,6 +113,78 @@ export FM_REMOTE_JOB_QUEUE_TIMEOUT=5
 export FM_REMOTE_JOB_TIMEOUT=5
 # shellcheck source=bin/fm-remote-job-lib.sh
 . "$ROOT/bin/fm-remote-job-lib.sh"
+
+UNOWNED_STATE="$TMP_ROOT/unowned-worker"
+UNSAFE_LOCK_TARGET="$TMP_ROOT/unsafe-worker-lock"
+mkdir -p "$UNOWNED_STATE" "$UNSAFE_LOCK_TARGET"
+ln -s "$UNSAFE_LOCK_TARGET" "$UNOWNED_STATE/worker.lock"
+HOME="$ACCOUNT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$UNOWNED_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+  "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
+  > "$TMP_ROOT/unowned-worker.out" 2> "$TMP_ROOT/unowned-worker.err" &
+UNOWNED_SUPERVISOR_PID=$!
+for _ in $(seq 1 40); do
+  kill -0 "$UNOWNED_SUPERVISOR_PID" 2>/dev/null || break
+  sleep 0.05
+done
+if kill -0 "$UNOWNED_SUPERVISOR_PID" 2>/dev/null; then
+  kill -TERM "$UNOWNED_SUPERVISOR_PID" 2>/dev/null || true
+  wait "$UNOWNED_SUPERVISOR_PID" 2>/dev/null || true
+  fail "a Linux supervisor retried after its child never acquired worker ownership"
+fi
+wait "$UNOWNED_SUPERVISOR_PID" 2>/dev/null
+UNOWNED_SUPERVISOR_RC=$?
+[ "$UNOWNED_SUPERVISOR_RC" -eq 1 ] \
+  || fail "an unowned Linux supervisor did not preserve its child startup failure"
+UNOWNED_ERROR_COUNT=$(grep -c '^remote-job-worker: cannot acquire or safely reclaim worker ownership$' \
+  "$TMP_ROOT/unowned-worker.err" || true)
+[ "$UNOWNED_ERROR_COUNT" -eq 1 ] \
+  || fail "an unowned Linux supervisor emitted more than one startup failure"
+pass "Linux supervision does not retry a child that never acquired worker ownership"
+
+FRESH_HEARTBEAT_STATE="$TMP_ROOT/fresh-heartbeat-worker"
+mkdir -p "$FRESH_HEARTBEAT_STATE/worker.lock" "$FRESH_HEARTBEAT_STATE/jobs" \
+  "$FRESH_HEARTBEAT_STATE/logs"
+printf '%s\n' "${BASHPID:-$$}" > "$FRESH_HEARTBEAT_STATE/worker.lock/pid"
+printf 'identity inspection unavailable\n' > "$FRESH_HEARTBEAT_STATE/worker.lock/start"
+printf 'identity inspection unavailable\n' > "$FRESH_HEARTBEAT_STATE/worker.lock/command"
+printf 'healthy\n' > "$FRESH_HEARTBEAT_STATE/worker.ready"
+chmod 600 "$FRESH_HEARTBEAT_STATE/worker.lock/"{pid,start,command} \
+  "$FRESH_HEARTBEAT_STATE/worker.ready"
+for attempt in $(seq 1 8); do
+  HOME="$ACCOUNT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" \
+    FM_REMOTE_JOB_STATE_ROOT="$FRESH_HEARTBEAT_STATE" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+    "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
+    > "$TMP_ROOT/fresh-heartbeat-worker-$attempt.out" \
+    2> "$TMP_ROOT/fresh-heartbeat-worker-$attempt.err" &
+  FRESH_HEARTBEAT_SUPERVISOR_PIDS="$FRESH_HEARTBEAT_SUPERVISOR_PIDS $!"
+done
+for _ in $(seq 1 40); do
+  FRESH_HEARTBEAT_RUNNING=0
+  for pid in $FRESH_HEARTBEAT_SUPERVISOR_PIDS; do
+    kill -0 "$pid" 2>/dev/null && FRESH_HEARTBEAT_RUNNING=1
+  done
+  [ "$FRESH_HEARTBEAT_RUNNING" -eq 0 ] && break
+  sleep 0.05
+done
+if [ "$FRESH_HEARTBEAT_RUNNING" -ne 0 ]; then
+  for pid in $FRESH_HEARTBEAT_SUPERVISOR_PIDS; do kill -TERM "$pid" 2>/dev/null || true; done
+  for pid in $FRESH_HEARTBEAT_SUPERVISOR_PIDS; do wait "$pid" 2>/dev/null || true; done
+  fail "Linux supervisors accumulated while a fresh worker heartbeat was present"
+fi
+for pid in $FRESH_HEARTBEAT_SUPERVISOR_PIDS; do
+  wait "$pid" 2>/dev/null
+  FRESH_HEARTBEAT_RC=$?
+  if [ "$FRESH_HEARTBEAT_RC" -ne 0 ]; then
+    grep -h . "$TMP_ROOT"/fresh-heartbeat-worker-*.err >&2 || true
+    fail "a Linux supervisor treated a fresh worker heartbeat as a startup failure (exit $FRESH_HEARTBEAT_RC)"
+  fi
+done
+FRESH_HEARTBEAT_SUPERVISOR_PIDS=
+FRESH_HEARTBEAT_ERROR_COUNT=$(grep -h -c . "$TMP_ROOT"/fresh-heartbeat-worker-*.err | awk '{ total += $1 } END { print total + 0 }')
+[ "$FRESH_HEARTBEAT_ERROR_COUNT" -eq 0 ] \
+  || fail "a Linux supervisor emitted an error while standing down for a fresh worker heartbeat"
+pass "concurrent Linux supervisors immediately stand down for a fresh worker heartbeat"
 
 LOCAL_BIN_PARENT="$ACCOUNT_HOME/.local"
 LOCAL_BIN_TARGET="$TMP_ROOT/local-bin-target"
@@ -224,13 +305,15 @@ pass "active jobs keep the worker ready for concurrent requests"
 
 OLD_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
 printf '\n' >> "$REMOTE_ROOT/bin/fm-remote-job-worker.sh"
-fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" \
+PATH="$RUNTIME_BIN:$PATH" FM_FAKE_LAUNCH_LOG="$FAKE_LAUNCH_LOG" \
+  fm_remote_job_ensure_worker "$REMOTE_ROOT" "$ACCOUNT_HOME" \
   || fail "$FM_REMOTE_JOB_ERROR"
 NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
 [ "$NEW_WORKER_PID" != "$OLD_WORKER_PID" ] || fail "ensure retained a worker running stale code"
 fm_remote_job_worker_identity_matches "$REMOTE_ROOT" "$ACCOUNT_HOME" \
   || fail "the replacement worker did not publish the current code identity"
-pass "ensure replaces a live worker after its code changes"
+assert_absent "$FAKE_LAUNCH_LOG" "worker replacement used a PATH-shadowed launch tool"
+pass "ensure replaces a live worker with fixed system launch tools after its code changes"
 
 RELOCATED_ROOT="$TMP_ROOT/relocated-root"
 cp -R "$REMOTE_ROOT" "$RELOCATED_ROOT"

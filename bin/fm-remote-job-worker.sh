@@ -2,10 +2,14 @@
 # Long-lived per-account worker for remote fm-on jobs.
 #
 # This process is launched by the Firstmate-owned dev.firstmate.remote-job
-# LaunchAgent on macOS and by a detached restart supervisor on Linux. It claims
-# only complete 0700 records staged by fm-remote-job-lib.sh under the fixed
-# account queue, refuses symlinks and malformed records, and executes only a
-# tracked non-symlink fm-*.sh under this worker's configured FM_ROOT/bin.
+# LaunchAgent on macOS and by a detached restart supervisor on Linux. The Linux
+# supervisor restarts only a child that acquired worker ownership before it
+# crashed; an unowned or unsafe startup failure exits without a retry loop, and
+# a contender immediately stands down when an existing fresh heartbeat proves
+# service readiness. The worker claims only complete 0700 records staged by
+# fm-remote-job-lib.sh under the fixed account queue, refuses symlinks and
+# malformed records, and executes only a tracked non-symlink fm-*.sh under its
+# configured FM_ROOT/bin.
 #
 # Each child runs under env -i with the shared filesystem-composed PATH, HOME,
 # FM_HOME, FM_ROOT_OVERRIDE, and FM_REMOTE_JOB_ACTIVE=1. Commands receive their
@@ -130,7 +134,8 @@ worker_acquire_lock() {
       continue
     fi
     if fm_remote_job_lock_owner_matches_process "$account_home"; then return 2; fi
-    if fm_remote_job_probe "$account_home" || worker_lock_recent; then
+    if fm_remote_job_probe "$account_home"; then return 2; fi
+    if worker_lock_recent; then
       attempt=$((attempt + 1))
       sleep 0.1
       continue
@@ -666,7 +671,10 @@ worker_supervise_linux() {
       WORKER_SUPERVISED_PID=
       return 75
     fi
-    worker_supervisor_cleanup_dead_child "$account_home" "$WORKER_SUPERVISED_PID" || true
+    if ! worker_supervisor_cleanup_dead_child "$account_home" "$WORKER_SUPERVISED_PID"; then
+      WORKER_SUPERVISED_PID=
+      return "$child_status"
+    fi
     WORKER_SUPERVISED_PID=
     sleep 0.1
   done
