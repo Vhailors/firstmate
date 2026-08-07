@@ -2,7 +2,7 @@
 
 The operator control plane is a web projection over Firstmate's existing contracts.
 It is not a second orchestrator, task database, session backend, or authority owner.
-The initial implementation lives in [`operator/`](../operator/) and deliberately ships a coherent read and dry-run slice before any browser-initiated fleet mutation.
+The implementation lives in [`operator/`](../operator/) and runs against one explicit live `FM_HOME` by default.
 
 ## Authoritative contracts
 
@@ -29,14 +29,15 @@ The responsive shell includes fleet status, missions, workers, secondmates, open
 Fluent UI supplies the accessible component foundation because this is a dense Windows-friendly operator product rather than a marketing page.
 The visual system uses one blue accent, a compact 12-pixel radius scale, semantic status color, system light and dark themes, 44-pixel desktop targets, and larger fixed mobile navigation targets.
 
-The tracked fixture is selected only with `VITE_FM_OPERATOR_FIXTURE=1` and displays a persistent fixture badge.
+The tracked fixture is selected only with `VITE_FM_OPERATOR_FIXTURE=1`, exists for offline UI tests and CI, and displays a persistent fixture badge.
+It is not an operator mode and never starts during Firstmate session initialization.
 The live adapter invokes only `bin/fm-fleet-snapshot.sh --json`, validates `fm-fleet-snapshot.v1`, requires the returned `FM_HOME` to equal the server-configured home, and applies a two-megabyte output bound and a twenty-second timeout.
 Report reads are limited to snapshot pointers beneath `<FM_HOME>/data`, tracked architecture reads stay beneath `docs/`, symlinks and path escapes are refused, and each document is limited to 256 KiB.
 The skill reader scans only configured roots, reads only `SKILL.md` files up to 64 KiB, and returns frontmatter-derived catalog metadata rather than skill bodies.
 
-Planning and worker instruction flows are dry-run only in this phase.
-They display the selected secondmate scope, project, authority, intended lifecycle owner, durable worker id, recorded endpoint, fixed executable, structured argv, and explicit confirmation control.
-Every mutation capability is false, so confirming a review cannot create a backlog record, write a document, or send text.
+Planning remains a preview because task intake still belongs to Firstmate's conversational lifecycle.
+Worker instruction delivery is live: the server creates a one-time preview, the UI shows the durable worker id, recorded endpoint, fixed executable and structured argv, and an explicit confirmation sends through `fm-send`.
+The fixture keeps every mutation capability false.
 
 The document editor is also a bounded draft surface in this phase.
 It keeps changes in browser memory and explains why the source is not writable.
@@ -45,11 +46,16 @@ Adding a direct filesystem write would bypass those owners and is out of scope u
 
 ## Authentication and session model
 
-The current live development server binds through Vite's default loopback listener and refuses the API until `FM_OPERATOR_TOKEN` is configured.
-Every API request must present that token as a bearer credential, and the server compares it with constant-time byte comparison.
-The browser keeps the token in tab-scoped `sessionStorage`, never persists it to repository state, and exposes a password-style connection field when authorization fails.
-This mechanism is acceptable only for the loopback or explicitly approved Tailnet-private vertical slice.
+[`bin/fm-operator.sh`](../bin/fm-operator.sh) binds the server to loopback and creates or reuses `<FM_HOME>/config/operator-token` with mode `0600`.
+The token record includes the canonical home and is rejected when used with another `FM_HOME`.
+`fm-operator.sh url` puts the token in a URL fragment; the browser moves it into tab-scoped `sessionStorage` and clears the fragment before loading fleet data.
+Every API request presents that token as a bearer credential, and the server compares it with constant-time byte comparison.
+This mechanism is acceptable only for loopback or an explicitly approved Tailnet-private route.
 It is not the public or Cloudflare session design.
+
+After a primary session acquires its lock and completes bootstrap, [`bin/fm-session-start.sh`](../bin/fm-session-start.sh) runs `fm-operator.sh ensure`.
+Read-only lock-refused sessions and marked secondmate homes skip the hook.
+The home can opt out with `config/operator-autostart` set to `off`; no public or Tailnet listener appears automatically.
 
 The first hardened private deployment must keep the application listener on loopback and put Tailscale Serve in front of it.
 Tailscale Serve strips spoofed Tailscale identity headers and adds identity headers for Tailnet traffic, while Funnel does not provide those identity headers.
@@ -103,22 +109,20 @@ A future implementation remains blocked until a tested existing-helper extension
 
 ## Mutation protocol
 
-Future mutation adapters must use a two-step protocol.
+Mutation adapters use a two-step protocol.
 
-First, the server creates a preview that contains the authenticated session id, intent digest, durable target id, current endpoint generation, exact fixed executable and argv, authority summary, capability name, creation time, and short expiry.
-The server signs or stores a one-time preview id and returns no general command channel.
+First, the server re-reads the fleet snapshot and creates a preview with a random one-time id, durable target id, current backend endpoint, exact fixed executable and argv, and a 60-second expiry.
+It stores that preview in server memory and returns no general command channel.
 
-Second, the captain confirms that exact preview.
+Second, the operator confirms that exact preview.
 The server consumes the preview once, re-reads the authoritative state, rejects any identity or authority drift, and invokes only the allowlisted contract owner with structured argv and an explicit `FM_HOME`.
-Success means the existing owner accepted the request, not that the requested work completed.
-The audit record stores the principal, intent digest, resolved durable identity, owner script, result class, and timestamps without storing secrets or full sensitive document bodies.
+Success means the existing owner confirmed submission, not that the requested work completed.
 
-The first approved mutation adapters should be:
+The implemented adapter sends one confirmed instruction through `bin/fm-send.sh` after exact identity and endpoint re-resolution.
+It stores previews in server memory for 60 seconds, consumes them once, and returns success only when `fm-send` confirms submission.
+Composer and busy guards, secondmate markers, pending-reply records, backend checks, and ThinkPad refusal remain inside the existing owners.
 
-1. Submit a secondmate-scoped task intent back into Firstmate's normal intake and backlog contract.
-2. Send one confirmed instruction through `bin/fm-send.sh` after exact identity re-resolution.
-3. Request a report revision through its owning worker rather than writing the report directly.
-4. Invoke one user-invocable skill through its declared harness path with a bounded argument schema.
+Task intake, report revision, and skill invocation remain unavailable until each path has an equally narrow owner adapter.
 
 Arbitrary shell execution, browser-supplied executable paths, direct task database writes, label searches, and generic document writes remain prohibited.
 
@@ -132,15 +136,10 @@ Configured Codex-installed skills use `$<name>` in a compatible Codex surface.
 Agent-only skills show no direct invocation and point to their documented trigger.
 Other harnesses need an explicit catalog adapter before their invocation syntax can be displayed as supported.
 
-Skill execution is a future mutation capability with the same preview, confirmation, identity, allowlist, and audit requirements as worker instructions.
+Skill execution is a future mutation capability with the same preview, one-time confirmation, identity, and allowlist requirements as worker instructions.
 The catalog never runs a skill merely because its row was opened, copied, or searched.
 
-## Phased roadmap
-
-### Foundation
-
-- Keep the self-contained responsive UI, fixture badge, real read-only fleet adapter, bounded document reads, skill catalog, planning preview, instruction dry-run, unavailable-remote state, and test coverage.
-- Keep every mutation capability disabled.
+## Remaining work
 
 ### Private deployment hardening
 
@@ -149,10 +148,10 @@ The catalog never runs a skill merely because its row was opened, copied, or sea
 - Add operator allowlists, CSRF protection, rate limits, structured audit storage, session revocation, and a visible trust-boundary panel.
 - Document an explicit, reversible Tailscale Serve activation without creating it automatically.
 
-### Guarded actions
+### More guarded actions
 
-- Add one-time confirmation previews and the first three allowlisted mutation adapters.
-- Re-resolve identity and authority at confirmation time.
+- Return confirmed secondmate-scoped task intent to Firstmate's intake and backlog contract.
+- Request report revisions through their owning worker.
 - Keep direct report writes and arbitrary command execution unavailable.
 
 ### ThinkPad visible work
@@ -169,7 +168,7 @@ The catalog never runs a skill merely because its row was opened, copied, or sea
 
 ## Verification boundary
 
-The operator package tests exact worker and secondmate resolution, unavailable ThinkPad refusal, confirmation requirements, dry-run argv construction, secret redaction, bounded live snapshot identity, report provenance, skill invocation metadata, loading and error states, planning, observation, document, and skill flows.
+The operator package tests live-default selection, FM_HOME refusal, home-bound tokens, exact worker and secondmate resolution, unavailable ThinkPad refusal, one-time confirmation, endpoint-drift rejection, fake-boundary `fm-send` execution, secret redaction, bounded live snapshot identity, report provenance, loading, planning, observation, document, and skill flows.
 The [CI workflow](../.github/workflows/ci.yml) installs the pinned operator toolchain and runs its tests, lint, and production build independently from the shell behavior-suite lanes.
 Repository documentation checks classify this page as maintainer architecture and validate its local links.
 No test or fixture is evidence that a real phone, Windows device, ThinkPad Herdr session, Tailscale Serve endpoint, Cloudflare Access application, tunnel, DNS record, or public deployment exists.

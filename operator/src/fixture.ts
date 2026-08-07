@@ -1,4 +1,4 @@
-import type { FleetSnapshot } from './model'
+import type { FleetSnapshot } from './model.ts'
 
 export const fixtureSnapshot: FleetSnapshot = {
   provenance: {
@@ -168,6 +168,6 @@ export const fixtureSnapshot: FleetSnapshot = {
   ],
   blockers: [
     'ThinkPad visible Herdr is unavailable; remote UI actions refuse fallback.',
-    'Mutation capabilities are disabled in the fixture and initial live adapter.',
+    'Mutation capabilities are disabled in this test-only fixture.',
   ],
 }

@@ -36,6 +36,12 @@
 #                       X-mode artifact writes, fleet sync) also run only when
 #                       locked; the four network sweeps run in the deferred
 #                       stage rather than this synchronous bootstrap section.
+#   2b. operator      - on a locked primary home, ensure the live loopback
+#                       operator unless config/operator-autostart says off.
+#                       Owned by bin/fm-operator.sh, and deliberately NOT a
+#                       runtime-bound stage: it mutates nothing the digest
+#                       reports, so a truncation here is still attributed to
+#                       the bootstrap stage that precedes it.
 #   3. wake-drain     - mutates the durable wake queue, so it also only runs
 #                       when locked.
 #   4. supervision-instructions - the one emitted operating block for the
@@ -580,6 +586,24 @@ if [ -n "$BOOT_OUT" ]; then
   printf '%s\n' "$BOOT_OUT"
 else
   printf '(silent - all good)\n'
+fi
+
+# A successful primary-home start ensures the live operator after bootstrap.
+# The owner script keeps lifecycle, home binding, token creation, loopback bind,
+# and opt-in fixture behavior out of this ordered digest composer.
+if [ "$READ_ONLY" -eq 0 ] && [ ! -f "$FM_HOME/.fm-secondmate-home" ]; then
+  OPERATOR_AUTOSTART=on
+  if [ -f "$CONFIG/operator-autostart" ] && [ ! -L "$CONFIG/operator-autostart" ]; then
+    OPERATOR_AUTOSTART=$(sed -n '1p' "$CONFIG/operator-autostart")
+  fi
+  if [ "$OPERATOR_AUTOSTART" != off ]; then
+    subsection "OPERATOR"
+    if OPERATOR_OUT=$("$SCRIPT_DIR/fm-operator.sh" ensure 2>&1); then
+      printf '%s\n' "$OPERATOR_OUT"
+    else
+      printf 'OPERATOR: unavailable - %s\n' "$OPERATOR_OUT"
+    fi
+  fi
 fi
 
 # --- 3. wake-drain -------------------------------------------------------

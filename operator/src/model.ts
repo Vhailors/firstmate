@@ -134,3 +134,15 @@ export type InstructionPreview = {
   confirmationRequired: true
   auditSummary: string
 }
+
+export type InstructionPreviewEnvelope = {
+  previewId: string
+  expiresAt: string
+  preview: InstructionPreview
+}
+
+export type InstructionDelivery = {
+  status: 'accepted'
+  durableId: string
+  owner: 'bin/fm-send.sh'
+}

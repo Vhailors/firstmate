@@ -60,6 +60,7 @@ new_world() {
   home="$w/home"
   fakebin="$w/fakebin"
   mkdir -p "$home/state" "$home/data" "$home/config" "$fakebin"
+  printf '%s\n' off > "$home/config/operator-autostart"
   git init -q -b main "$root"
   git -C "$root" commit -q --allow-empty -m init
   printf '%s|%s|%s\n' "$root" "$home" "$fakebin"
@@ -1007,6 +1008,50 @@ EOF
     || fail "the read-once contract is stated $contract_count times instead of once: $out"
 
   pass "the read-once contract is stated once, ahead of the sources it governs"
+}
+
+test_locked_primary_ensures_live_operator_after_bootstrap() {
+  local rec root home fakebin out log port boot_line operator_line wake_line
+  rec=$(new_world operator-start)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  rm -f "$home/config/operator-autostart"
+  cat > "$fakebin/node" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -e) printf '%064d' 0 ;;
+esac
+SH
+  chmod +x "$fakebin/node"
+  cat > "$fakebin/operator-vite" <<'SH'
+#!/usr/bin/env bash
+printf 'home=%s root=%s token_file=%s args=%s\n' \
+  "$FM_HOME" "$FM_ROOT_OVERRIDE" "$FM_OPERATOR_TOKEN_FILE" "$*" >> "$FM_OPERATOR_FAKE_LOG"
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+SH
+  chmod +x "$fakebin/operator-vite"
+  log="$home/operator-vite.log"
+  port=$((40000 + $$ % 20000))
+
+  out=$(FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
+    FM_OPERATOR_PORT="$port" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_OPERATOR_PORT="$port" \
+    "$ROOT/bin/fm-operator.sh" stop >/dev/null
+
+  assert_contains "$out" "OPERATOR: live at http://127.0.0.1:$port for $home" \
+    "locked primary session start did not ensure the live operator"
+  assert_contains "$(cat "$log")" "home=$home root=$root token_file=$home/config/operator-token" \
+    "session-start operator did not receive the exact home-bound runtime"
+  boot_line=$(printf '%s\n' "$out" | grep -n '^BOOTSTRAP$' | head -1 | cut -d: -f1)
+  operator_line=$(printf '%s\n' "$out" | grep -n '^OPERATOR$' | head -1 | cut -d: -f1)
+  wake_line=$(printf '%s\n' "$out" | grep -n '^WAKE QUEUE$' | head -1 | cut -d: -f1)
+  [ "$boot_line" -lt "$operator_line" ] && [ "$operator_line" -lt "$wake_line" ] \
+    || fail "operator ensure did not run between bootstrap and wake drain"
+  pass "locked primary session start ensures the home-bound live operator after bootstrap"
 }
 
 test_herdr_backend_diagnostics_follow_real_session_start() {
@@ -2213,6 +2258,7 @@ test_trace_context_effective_state_is_frozen_after_lock
 test_session_lock_concurrent_single_winner
 test_output_ordering_diagnostics_lead
 test_read_once_contract_is_stated_once_before_its_subject
+test_locked_primary_ensures_live_operator_after_bootstrap
 test_herdr_backend_diagnostics_follow_real_session_start
 test_session_start_relaunches_missing_pi_secondmate
 test_deferred_relaunch_is_always_reported

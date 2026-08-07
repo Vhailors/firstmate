@@ -29,12 +29,18 @@ import {
   Warning20Filled,
 } from '@fluentui/react-icons'
 import { useEffect, useMemo, useState } from 'react'
+import {
+  confirmInstruction as defaultConfirmInstruction,
+  loadSnapshot as defaultLoader,
+  requestInstructionPreview as defaultRequestInstructionPreview,
+} from './api'
 import { previewInstruction, previewPlan } from './domain'
-import { fixtureSnapshot } from './fixture'
 import type {
   FleetSnapshot,
   FleetState,
+  InstructionDelivery,
   InstructionPreview,
+  InstructionPreviewEnvelope,
   PlanDraft,
   PlanPreview,
 } from './model'
@@ -45,6 +51,8 @@ type View = 'fleet' | 'plan' | 'observe' | 'documents' | 'skills' | 'access'
 type AppProps = {
   initialSnapshot?: FleetSnapshot
   loadSnapshot?: () => Promise<FleetSnapshot>
+  requestInstructionPreview?: (workerId: string, instruction: string) => Promise<InstructionPreviewEnvelope>
+  confirmInstruction?: (previewId: string) => Promise<InstructionDelivery>
 }
 
 const NAVIGATION: Array<{ id: View; label: string; icon: typeof AppsListDetail24Regular }> = [
@@ -58,24 +66,6 @@ const NAVIGATION: Array<{ id: View; label: string; icon: typeof AppsListDetail24
 
 const STATE_LABELS: Record<FleetState, string> = {
   working: 'Working', parked: 'Parked', done: 'Done', blocked: 'Blocked', paused: 'Paused', failed: 'Failed', unknown: 'Unknown',
-}
-
-async function defaultLoader() {
-  if (import.meta.env.VITE_FM_OPERATOR_FIXTURE === '1') return fixtureSnapshot
-  const token = window.sessionStorage.getItem('fm-operator-token') ?? ''
-  const response = await fetch('/api/fleet', { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-  const body: unknown = await response.json().catch(() => null)
-  const reported = typeof body === 'object' && body !== null && 'error' in body
-    && typeof (body as { error: unknown }).error === 'string'
-    ? (body as { error: string }).error
-    : ''
-  if (!response.ok) {
-    throw new Error(reported || `Operator API responded with HTTP ${response.status}.`)
-  }
-  if (typeof body !== 'object' || body === null || !('workers' in body) || !('provenance' in body)) {
-    throw new Error(reported || `Operator API returned a response that is not a fleet snapshot (HTTP ${response.status}).`)
-  }
-  return body as FleetSnapshot
 }
 
 function StateMark({ state }: { state: FleetState }) {
@@ -197,41 +187,65 @@ function PlanView({ snapshot }: { snapshot: FleetSnapshot }) {
   </div>
 }
 
-function ObserveView({ snapshot }: { snapshot: FleetSnapshot }) {
+function ObserveView({
+  snapshot,
+  requestPreview,
+  confirm,
+}: {
+  snapshot: FleetSnapshot
+  requestPreview: (workerId: string, instruction: string) => Promise<InstructionPreviewEnvelope>
+  confirm: (previewId: string) => Promise<InstructionDelivery>
+}) {
   const [workerId, setWorkerId] = useState(snapshot.workers[0]?.id ?? '')
   const [instruction, setInstruction] = useState('')
   const [preview, setPreview] = useState<InstructionPreview | null>(null)
+  const [previewId, setPreviewId] = useState('')
   const [error, setError] = useState('')
   const [confirmed, setConfirmed] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [delivery, setDelivery] = useState<InstructionDelivery | null>(null)
   const worker = snapshot.workers.find((candidate) => candidate.id === workerId)
 
-  function review() {
-    try { setPreview(previewInstruction(snapshot, workerId, instruction)); setError(''); setConfirmed(false) }
-    catch (reason) { setPreview(null); setError(reason instanceof Error ? reason.message : 'Instruction could not be prepared.') }
+  async function review() {
+    try {
+      const envelope = snapshot.provenance.mode === 'fixture'
+        ? { previewId: '', expiresAt: '', preview: previewInstruction(snapshot, workerId, instruction) }
+        : await requestPreview(workerId, instruction)
+      setPreview(envelope.preview); setPreviewId(envelope.previewId); setError(''); setConfirmed(false); setDelivery(null)
+    } catch (reason) { setPreview(null); setPreviewId(''); setError(reason instanceof Error ? reason.message : 'Instruction could not be prepared.') }
+  }
+
+  async function send() {
+    if (!previewId) return
+    setSubmitting(true); setError('')
+    try { setDelivery(await confirm(previewId)); setPreviewId(''); setConfirmed(false) }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Instruction could not be sent.') }
+    finally { setSubmitting(false) }
   }
 
   return <div className="view-stack">
     <SectionHeading title="Observe, then steer" summary="Resolve an exact recorded worker or visible pane before composing any instruction." />
     <div className="observation-layout">
       <section className="content-section">
-        <Field label="Recorded worker"><select aria-label="Recorded worker" value={workerId} onChange={(event) => { setWorkerId(event.target.value); setPreview(null) }}>{snapshot.workers.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}</select></Field>
+        <Field label="Recorded worker"><select aria-label="Recorded worker" value={workerId} onChange={(event) => { setWorkerId(event.target.value); setPreview(null); setPreviewId(''); setDelivery(null) }}>{snapshot.workers.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}</select></Field>
         {worker && <div className="identity-card"><div className="title-row"><h2>{worker.title}</h2><StateMark state={worker.state} /></div><dl>
           <div><dt>Durable id</dt><dd><code>{worker.id}</code></dd></div><div><dt>Backend</dt><dd>{worker.backend}</dd></div><div><dt>Endpoint</dt><dd><code>{worker.endpoint ?? 'unavailable'}</code></dd></div><div><dt>State source</dt><dd>{worker.stateSource}</dd></div>
         </dl>{worker.remote?.host === 'fm-thinkpad' && worker.remote.visibility !== 'visible-herdr' && <div className="refusal"><CloudDismiss24Regular /><div><strong>Visible remote unavailable</strong><p>No fallback to fm-remote, hidden SSH, or a detached terminal is permitted.</p></div></div>}</div>}
       </section>
       <section className="form-surface">
-        <Field label="Instruction" hint="The existing fm-send composer, busy, and submit guards remain authoritative."><Textarea resize="vertical" value={instruction} onChange={(_, data) => setInstruction(data.value)} /></Field>
+        <Field label="Instruction" hint="The existing fm-send composer, busy, and submit guards remain authoritative."><Textarea resize="vertical" value={instruction} onChange={(_, data) => { setInstruction(data.value); setPreview(null); setPreviewId(''); setConfirmed(false); setDelivery(null) }} /></Field>
         {error && <p className="form-error" role="alert">{error}</p>}
-        <Button appearance="primary" icon={<Send24Regular />} onClick={review}>Prepare instruction</Button>
+        <Button appearance="primary" icon={<Send24Regular />} onClick={() => void review()}>Prepare instruction</Button>
       </section>
     </div>
-    {preview && <section className="review-surface" aria-label="Instruction dry-run">
-      <div className="title-row"><h2>Auditable dry-run</h2><Badge appearance="outline">No send performed</Badge></div>
+    {preview && <section className="review-surface" aria-label="Instruction confirmation preview">
+      <div className="title-row"><h2>Confirmation preview</h2><Badge appearance="outline">No send performed</Badge></div>
       <dl className="review-grid"><div><dt>Durable id</dt><dd>{preview.resolution.durableId}</dd></div><div><dt>Backend endpoint</dt><dd>{preview.resolution.backend}: {preview.resolution.endpoint}</dd></div><div className="wide"><dt>Approved executable</dt><dd><code>{preview.command.executable}</code></dd></div><div className="wide"><dt>Arguments</dt><dd><code>{JSON.stringify(preview.command.args)}</code></dd></div></dl>
       <p>{preview.auditSummary}</p>
       <Switch checked={confirmed} onChange={(_, data) => setConfirmed(data.checked)} label="I reviewed the exact target and instruction" />
-      <Button appearance="primary" disabled={!confirmed || !snapshot.trust.capabilities.sendInstruction}>Send instruction</Button>
-      {!snapshot.trust.capabilities.sendInstruction && <p className="capability-note">Send capability is disabled. The dry-run is the complete action.</p>}
+      <Button appearance="primary" disabled={!confirmed || !previewId || !snapshot.trust.capabilities.sendInstruction || submitting} onClick={() => void send()}>{submitting ? 'Sending…' : 'Send instruction'}</Button>
+      {!snapshot.trust.capabilities.sendInstruction && <p className="capability-note">Fixture mode is read-only. Live sessions enable confirmed sends.</p>}
+      {delivery && <p className="success-note" role="status">Instruction accepted by {delivery.owner} for {delivery.durableId}.</p>}
     </section>}
   </div>
 }
@@ -278,7 +292,12 @@ function AccessView({ snapshot }: { snapshot: FleetSnapshot }) {
   </div>
 }
 
-export default function App({ initialSnapshot, loadSnapshot = defaultLoader }: AppProps) {
+export default function App({
+  initialSnapshot,
+  loadSnapshot = defaultLoader,
+  requestInstructionPreview = defaultRequestInstructionPreview,
+  confirmInstruction = defaultConfirmInstruction,
+}: AppProps) {
   const [snapshot, setSnapshot] = useState<FleetSnapshot | null>(initialSnapshot ?? null)
   const [view, setView] = useState<View>('fleet')
   const [loading, setLoading] = useState(!initialSnapshot)
@@ -315,7 +334,7 @@ export default function App({ initialSnapshot, loadSnapshot = defaultLoader }: A
   const content = snapshot && ({
     fleet: <FleetView snapshot={snapshot} />,
     plan: <PlanView snapshot={snapshot} />,
-    observe: <ObserveView snapshot={snapshot} />,
+    observe: <ObserveView snapshot={snapshot} requestPreview={requestInstructionPreview} confirm={confirmInstruction} />,
     documents: <DocumentsView snapshot={snapshot} />,
     skills: <SkillsView snapshot={snapshot} />,
     access: <AccessView snapshot={snapshot} />,

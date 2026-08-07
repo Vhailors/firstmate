@@ -301,7 +301,7 @@ export class SafeFirstmateAdapter {
         cloudflare: 'not-configured',
         tailscale: 'unknown',
         thinkpad: 'unknown',
-        capabilities: { planMutation: false, sendInstruction: false, documentWrite: false },
+        capabilities: { planMutation: false, sendInstruction: true, documentWrite: false },
       },
       workers,
       secondmates,

@@ -1,7 +1,8 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import App from './App.tsx'
+import { previewInstruction } from './domain.ts'
 import { fixtureSnapshot } from './fixture.ts'
 
 describe('operator UI core flows', () => {
@@ -37,6 +38,42 @@ describe('operator UI core flows', () => {
     await user.click(screen.getByRole('button', { name: 'Prepare instruction' }))
     expect(screen.getByRole('alert')).toHaveTextContent('Refusing VPS, SSH, or detached-terminal fallback')
     expect(screen.getByText('No fallback to fm-remote, hidden SSH, or a detached terminal is permitted.')).toBeInTheDocument()
+  })
+
+  it('executes a live instruction only after preview and explicit confirmation', async () => {
+    const user = userEvent.setup()
+    const liveSnapshot = {
+      ...fixtureSnapshot,
+      provenance: { ...fixtureSnapshot.provenance, mode: 'live' as const, label: 'Live fleet' },
+      trust: {
+        ...fixtureSnapshot.trust,
+        capabilities: { ...fixtureSnapshot.trust.capabilities, sendInstruction: true },
+      },
+    }
+    const requestInstructionPreview = vi.fn(async (workerId: string, instruction: string) => ({
+      previewId: 'preview-live',
+      expiresAt: '2026-08-07T10:01:00Z',
+      preview: previewInstruction(liveSnapshot, workerId, instruction),
+    }))
+    const confirmInstruction = vi.fn(async () => ({
+      status: 'accepted' as const,
+      durableId: 'firstmate-control-plane-ui-20260810',
+      owner: 'bin/fm-send.sh' as const,
+    }))
+    render(<App
+      initialSnapshot={liveSnapshot}
+      requestInstructionPreview={requestInstructionPreview}
+      confirmInstruction={confirmInstruction}
+    />)
+    await user.click(within(screen.getByRole('navigation', { name: 'Primary navigation' })).getByRole('button', { name: 'Observe' }))
+    await user.type(screen.getByLabelText('Instruction'), 'Review the failing test.')
+    await user.click(screen.getByRole('button', { name: 'Prepare instruction' }))
+    expect(requestInstructionPreview).toHaveBeenCalledWith('firstmate-control-plane-ui-20260810', 'Review the failing test.')
+    expect(confirmInstruction).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('switch', { name: 'I reviewed the exact target and instruction' }))
+    await user.click(screen.getByRole('button', { name: 'Send instruction' }))
+    expect(confirmInstruction).toHaveBeenCalledWith('preview-live')
+    expect(await screen.findByRole('status')).toHaveTextContent('accepted by bin/fm-send.sh')
   })
 
   it('shows bounded document redaction and an unavailable write state', async () => {

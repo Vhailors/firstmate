@@ -43,7 +43,7 @@ describe('authorization and confirmation boundaries', () => {
     })).toThrow('unavailable')
   })
 
-  it('builds an argv-shaped fm-send dry-run and never a shell string', () => {
+  it('builds an argv-shaped fm-send confirmation preview and never a shell string', () => {
     const preview = previewInstruction(
       fixtureSnapshot,
       'firstmate-control-plane-ui-20260810',

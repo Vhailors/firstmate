@@ -100,6 +100,6 @@ export function previewInstruction(
       environment: { FM_HOME: '<server-configured-home>' },
     },
     confirmationRequired: true,
-    auditSummary: `Dry-run only. Resolve ${worker.id} from state/${worker.id}.meta, then delegate composer and submit checks to fm-send.`,
+    auditSummary: `No send performed. Confirmation re-resolves ${worker.id} from state/${worker.id}.meta, then delegates composer and submit checks to fm-send.`,
   }
 }

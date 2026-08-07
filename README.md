@@ -198,7 +198,7 @@ Firstmate's skills live in two separate places with different audiences:
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) - maintainer architecture for the crew, supervision, worktrees, secondmates, and project modes.
-- [docs/operator-control-plane.md](docs/operator-control-plane.md) - maintainer architecture for the optional responsive operator shell, trust boundary, safe adapters, and phased mutation path.
+- [docs/operator-control-plane.md](docs/operator-control-plane.md) - maintainer architecture for the live session-start operator, private trust boundary, and confirmed mutation adapters.
 - [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional Relay and its X and Discord setup steps, the files you set, and harness support.
 - [docs/remote-secondmates.md](docs/remote-secondmates.md) - current setup, routing, transfer, recovery, and safety behavior for whole-home remote second mates.
 - [docs/calm.md](docs/calm.md) - current Pi `/calm` behavior and supported presentation limits.
