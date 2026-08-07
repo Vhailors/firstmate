@@ -63,6 +63,34 @@ describe('authorization and confirmation boundaries', () => {
     expect(previewInstruction(fixtureSnapshot, 'firstmate-control-plane-ui-20260810', '--key escape').command.args)
       .toEqual(['fm-firstmate-control-plane-ui-20260810', '--key escape'])
   })
+
+  it('refuses instruction text a composer would read as more than one keystroke line', () => {
+    const refused = {
+      newline: 'restart the check\nthen report back',
+      'carriage return': 'restart the check\rthen report back',
+      escape: 'restart the check\u001bthen report back',
+      delete: 'restart the check\u007fthen report back',
+      tab: 'restart the check\tthen report back',
+      'null byte': 'restart the check\u0000then report back',
+      'C1 control': 'restart the check\u0085then report back',
+    }
+    for (const [label, instruction] of Object.entries(refused)) {
+      expect(() => previewInstruction(fixtureSnapshot, 'firstmate-control-plane-ui-20260810', instruction), label)
+        .toThrow('one line without control characters')
+    }
+  })
+
+  it('keeps a single-line instruction with ordinary punctuation and surrounding whitespace', () => {
+    const preview = previewInstruction(
+      fixtureSnapshot,
+      'firstmate-control-plane-ui-20260810',
+      '\n  Restart the check — then report back (path: a/b "c").  \n',
+    )
+    expect(preview.command.args).toEqual([
+      'fm-firstmate-control-plane-ui-20260810',
+      'Restart the check — then report back (path: a/b "c").',
+    ])
+  })
 })
 
 describe('secret redaction', () => {

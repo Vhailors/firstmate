@@ -88,6 +88,13 @@ export function previewInstruction(
   if (trimmed === '--key') {
     throw new Error('Instruction text must not be the fm-send "--key" control selector.')
   }
+  // fm-send delivers one line of literal text and the backends type the argument
+  // raw, so an embedded newline submits a partial turn and an embedded escape
+  // clears the composer mid-typing. Refusing here keeps the previewed argv and
+  // the delivered keystrokes the same thing.
+  if (/\p{Cc}/u.test(trimmed)) {
+    throw new Error('Instruction text must be one line without control characters.')
+  }
   return {
     worker,
     instruction: trimmed,

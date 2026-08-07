@@ -1060,14 +1060,19 @@ EOF
   log="$home/operator-vite.log"
   port=$((40000 + $$ % 20000))
 
-  out=$(FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
-    FM_OPERATOR_DIR="$pkg" FM_OPERATOR_PORT="$port" FM_OPERATOR_AUTOSTART=on \
-    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  # No opt-out file and no FM_OPERATOR_AUTOSTART: the production live-by-default
+  # branch, not the suite-wide seam tests/lib.sh exports.
+  out=$(env -u FM_OPERATOR_AUTOSTART -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" BASH_ENV="${FM_TEST_BASH_ENV:-}" \
+    FM_PI_EXTENSION_ISOLATION="${FM_TEST_PI_ISOLATION:-}" \
+    FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
+    FM_OPERATOR_DIR="$pkg" FM_OPERATOR_PORT="$port" \
+    "$SESSION_START")
   FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_OPERATOR_PORT="$port" \
     "$ROOT/bin/fm-operator.sh" stop >/dev/null
 
   assert_contains "$out" "OPERATOR: live at http://127.0.0.1:$port for $home" \
-    "locked primary session start did not ensure the live operator"
+    "locked primary session start did not ensure the live operator by default"
   assert_contains "$(cat "$log")" "home=$home root=$root token_file=$home/config/operator-token" \
     "session-start operator did not receive the exact home-bound runtime"
   assert_contains "$(cat "$log")" "cwd=$pkg args=preview " \
@@ -1077,7 +1082,7 @@ EOF
   wake_line=$(printf '%s\n' "$out" | grep -n '^WAKE QUEUE$' | head -1 | cut -d: -f1)
   [ "$boot_line" -lt "$operator_line" ] && [ "$operator_line" -lt "$wake_line" ] \
     || fail "operator ensure did not run between bootstrap and wake drain"
-  pass "locked primary session start ensures the home-bound live operator after bootstrap"
+  pass "locked primary session start ensures the home-bound live operator by default"
 }
 
 # The home-local opt-out has to hold on its own, without the suite-wide

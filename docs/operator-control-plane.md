@@ -121,6 +121,7 @@ Success means the existing owner confirmed submission, not that the requested wo
 The implemented adapter sends one confirmed instruction through `bin/fm-send.sh` after exact identity and endpoint re-resolution.
 It stores previews in server memory for 60 seconds, consumes them once, and returns success only when `fm-send` confirms submission.
 Instruction text that `fm-send` would read as its `--key` control selector is refused at preview, so the confirmed argv always means the literal text the operator saw.
+Text carrying a newline, carriage return, escape, or any other control character is refused there too: `fm-send` delivers one literal line and the backends type it raw, so an embedded control byte would reach the worker as a keystroke that submits or clears a partial turn.
 A refused delivery returns one generic browser error and writes the `fm-send` exit code and stderr to the server log, where `state/operator.log` keeps the distinguishable failure classes.
 Because several of those refusals happen after the text was already submitted, the browser reports an explicit unknown outcome pointing at that log rather than claiming no send occurred, and the consumed preview is discarded so no resend is possible without a fresh one.
 Every child script the server runs receives an `FM_*`-free environment plus the explicit `FM_HOME` and `FM_ROOT_OVERRIDE` bindings, so the long-lived server's frozen startup environment can never relax a fleet guard or reuse another turn's correlation id.
