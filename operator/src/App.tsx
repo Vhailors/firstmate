@@ -64,8 +64,17 @@ async function defaultLoader() {
   if (import.meta.env.VITE_FM_OPERATOR_FIXTURE === '1') return fixtureSnapshot
   const token = window.sessionStorage.getItem('fm-operator-token') ?? ''
   const response = await fetch('/api/fleet', { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-  const body = await response.json() as FleetSnapshot | { error: string }
-  if (!response.ok) throw new Error('error' in body ? body.error : 'Operator API unavailable.')
+  const body: unknown = await response.json().catch(() => null)
+  const reported = typeof body === 'object' && body !== null && 'error' in body
+    && typeof (body as { error: unknown }).error === 'string'
+    ? (body as { error: string }).error
+    : ''
+  if (!response.ok) {
+    throw new Error(reported || `Operator API responded with HTTP ${response.status}.`)
+  }
+  if (typeof body !== 'object' || body === null || !('workers' in body) || !('provenance' in body)) {
+    throw new Error(reported || `Operator API returned a response that is not a fleet snapshot (HTTP ${response.status}).`)
+  }
   return body as FleetSnapshot
 }
 

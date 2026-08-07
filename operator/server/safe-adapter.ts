@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises'
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { redactSecrets } from '../src/domain.ts'
 import type {
@@ -229,7 +229,7 @@ async function skillRecords(root: string, repoRoot: string): Promise<SkillRecord
       const fields = parseFrontmatter(content)
       const name = fields.get('name') || directory.name
       const internal = root.includes(`${sep}.agents${sep}skills`)
-      const userInvocable = fields.get('user-invocable') !== 'false' && !fields.get('metadata.internal')
+      const userInvocable = fields.get('user-invocable') !== 'false'
       results.push({
         id: `${root}:${name}`,
         name,
@@ -350,12 +350,4 @@ export class SafeFirstmateAdapter {
     }
     return records
   }
-}
-
-export function safeDocumentBasename(path: string) {
-  return basename(path)
-}
-
-export function safeDocumentParent(path: string) {
-  return dirname(path)
 }

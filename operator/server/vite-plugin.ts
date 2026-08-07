@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
 import { SafeFirstmateAdapter } from './safe-adapter.ts'
 
@@ -28,7 +29,7 @@ export function operatorApiPlugin(): Plugin {
   return {
     name: 'firstmate-operator-api',
     configureServer(server) {
-      const repoRoot = process.env.FM_ROOT_OVERRIDE || new URL('../..', import.meta.url).pathname
+      const repoRoot = process.env.FM_ROOT_OVERRIDE || fileURLToPath(new URL('../..', import.meta.url))
       const fmHome = process.env.FM_HOME || repoRoot
       const expectedToken = process.env.FM_OPERATOR_TOKEN || ''
       const adapter = new SafeFirstmateAdapter({

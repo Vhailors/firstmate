@@ -51,20 +51,23 @@ export function resolveSecondmate(snapshot: FleetSnapshot, selector: string): Se
 
 export function previewPlan(snapshot: FleetSnapshot, draft: PlanDraft): PlanPreview {
   const secondmate = resolveSecondmate(snapshot, draft.secondmateId)
-  if (!draft.title.trim() || !draft.objective.trim() || !draft.project.trim()) {
+  const title = draft.title.trim()
+  const objective = draft.objective.trim()
+  const project = draft.project.trim()
+  if (!title || !objective || !project) {
     throw new Error('Project, title, and objective are required before review.')
   }
   if (secondmate.availability === 'unavailable') {
     throw new Error(`Secondmate "${secondmate.id}" is unavailable: ${secondmate.reason ?? 'unknown reason'}`)
   }
-  const warnings = secondmate.projects.includes(draft.project)
+  const warnings = secondmate.projects.includes(project)
     ? []
-    : [`${draft.project} is outside this secondmate's provisioned project list. Scope review is required.`]
+    : [`${project} is outside this secondmate's provisioned project list. Scope review is required.`]
   return {
     ...draft,
-    title: draft.title.trim(),
-    objective: draft.objective.trim(),
-    project: draft.project.trim(),
+    title,
+    objective,
+    project,
     secondmate,
     mutationOwner: 'Firstmate task lifecycle',
     intendedMutation: `Create one ${draft.authority === 'implementation' ? 'ship' : 'scout'} task routed to ${secondmate.id}; no direct backlog or pane write.`,
