@@ -171,6 +171,31 @@ operator_port_open() { # <port>
   ( exec 3<>"/dev/tcp/127.0.0.1/$1" ) >/dev/null 2>&1
 }
 
+# The operator's own unauthenticated /api refusal is the readiness contract
+# between this launcher and operator/server/vite-plugin.ts: only a preview
+# server that loaded operator/vite.config.ts answers it, so an unrelated
+# process listening on the same loopback port is never mistaken for this home's
+# operator.
+OPERATOR_READY_MARKER='A valid operator session token is required.'
+
+operator_http_ready() { # <port>
+  local port=$1 response
+  response=$(
+    { exec 3<>"/dev/tcp/127.0.0.1/$port"; } 2>/dev/null || exit 1
+    printf 'GET /api/fleet HTTP/1.0\r\nHost: 127.0.0.1:%s\r\nConnection: close\r\n\r\n' "$port" >&3 || exit 1
+    line=
+    while IFS= read -r -t 5 line <&3 || [ -n "$line" ]; do
+      printf '%s\n' "$line"
+      line=
+    done
+    exit 0
+  ) || return 1
+  case "$response" in
+    *"$OPERATOR_READY_MARKER"*) return 0 ;;
+  esac
+  return 1
+}
+
 # `vite preview` serves an existing production build, so the bundle has to exist
 # before the loopback server is useful. Build it once here rather than falling
 # back to the development server.
@@ -216,16 +241,22 @@ operator_start() {
     return 1
   }
   operator_build_ready "$vite_bin" || return 1
+  # A reusable record was returned above and a superseded one was terminated, so
+  # anything still holding this port belongs to another process.
+  if operator_port_open "$port"; then
+    echo "fm-operator: 127.0.0.1:$port is already held by another process; stop it or choose another operator port" >&2
+    return 1
+  fi
   # Vite resolves its config and root from the working directory, so the server
   # is launched from the operator package and not from the captain's cwd.
   (
     cd "$OPERATOR_DIR" \
       && FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_OPERATOR_TOKEN_FILE="$TOKEN_FILE" \
         exec nohup "$vite_bin" preview --host 127.0.0.1 --port "$port" --strictPort
-  ) > "$LOG_FILE" 2>&1 &
+  ) >> "$LOG_FILE" 2>&1 &
   pid=$!
   attempt=0
-  until operator_port_open "$port"; do
+  until operator_http_ready "$port"; do
     kill -0 "$pid" 2>/dev/null || {
       wait "$pid" 2>/dev/null || true
       echo "fm-operator: live server failed to start; inspect $LOG_FILE" >&2
@@ -235,11 +266,16 @@ operator_start() {
     if [ "$attempt" -ge 150 ]; then
       kill -TERM "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
-      echo "fm-operator: live server never accepted loopback connections on port $port; inspect $LOG_FILE" >&2
+      echo "fm-operator: live server never served the operator API on port $port; inspect $LOG_FILE" >&2
       return 1
     fi
     sleep 0.1
   done
+  kill -0 "$pid" 2>/dev/null || {
+    wait "$pid" 2>/dev/null || true
+    echo "fm-operator: live server exited before its runtime could be recorded; inspect $LOG_FILE" >&2
+    return 1
+  }
   pid_identity=$(fm_pid_identity "$pid" 2>/dev/null) || {
     kill -TERM "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true

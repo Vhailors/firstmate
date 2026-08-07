@@ -74,6 +74,46 @@ describe('operator UI core flows', () => {
     await user.click(screen.getByRole('button', { name: 'Send instruction' }))
     expect(confirmInstruction).toHaveBeenCalledWith('preview-live')
     expect(await screen.findByRole('status')).toHaveTextContent('accepted by bin/fm-send.sh')
+    expect(screen.queryByText('No send performed')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Instruction confirmation preview')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Instruction delivery result')).toBeInTheDocument()
+  })
+
+  it('keeps the refusal reason and forces a fresh preview after a failed confirmation', async () => {
+    const user = userEvent.setup()
+    const liveSnapshot = {
+      ...fixtureSnapshot,
+      provenance: { ...fixtureSnapshot.provenance, mode: 'live' as const, label: 'Live fleet' },
+      trust: {
+        ...fixtureSnapshot.trust,
+        capabilities: { ...fixtureSnapshot.trust.capabilities, sendInstruction: true },
+      },
+    }
+    const requestInstructionPreview = vi.fn(async (workerId: string, instruction: string) => ({
+      previewId: 'preview-refused',
+      expiresAt: '2026-08-07T10:01:00Z',
+      preview: previewInstruction(liveSnapshot, workerId, instruction),
+    }))
+    const confirmInstruction = vi.fn(async () => {
+      throw new Error('fm-send refused or could not confirm the instruction delivery.')
+    })
+    render(<App
+      initialSnapshot={liveSnapshot}
+      requestInstructionPreview={requestInstructionPreview}
+      confirmInstruction={confirmInstruction}
+    />)
+    await user.click(within(screen.getByRole('navigation', { name: 'Primary navigation' })).getByRole('button', { name: 'Observe' }))
+    await user.type(screen.getByLabelText('Instruction'), 'Escalate the stuck lane.')
+    await user.click(screen.getByRole('button', { name: 'Prepare instruction' }))
+    await user.click(screen.getByRole('switch', { name: 'I reviewed the exact target and instruction' }))
+    await user.click(screen.getByRole('button', { name: 'Send instruction' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('fm-send refused or could not confirm')
+    expect(screen.queryByLabelText('Instruction delivery result')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Send instruction' })).toBeDisabled()
+    await user.click(screen.getByRole('switch', { name: 'I reviewed the exact target and instruction' }))
+    expect(screen.getByRole('button', { name: 'Send instruction' })).toBeDisabled()
+    expect(confirmInstruction).toHaveBeenCalledOnce()
   })
 
   it('shows bounded document redaction and an unavailable write state', async () => {

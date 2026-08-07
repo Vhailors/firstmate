@@ -32,7 +32,7 @@ Marked secondmate homes and lock-refused sessions never start the operator.
 
 `config/operator-port` may contain one loopback port from 1024 through 65535, while `FM_OPERATOR_PORT` overrides it for the current command.
 An absent setting uses port 4173.
-The launcher records the running process in `state/operator-runtime` and sends server output to `state/operator.log`; the script header owns those exact record fields and lifecycle commands.
+The launcher records the running process in `state/operator-runtime` and appends build and server output to `state/operator.log`, so diagnostics from an earlier failed start survive the next one; the script header owns those exact record fields and lifecycle commands.
 It serves the operator's production build and never the development server, and a runtime record it can no longer reuse is stopped before it is replaced.
 
 The launcher generates `config/operator-token` with mode `0600` on first start and reuses it later.

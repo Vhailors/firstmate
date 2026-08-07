@@ -11,6 +11,8 @@ OPERATOR_DIR="$TMP_ROOT/operator"
 FAKE_NODE=$(command -v node || true)
 PORT=$((30000 + $$ % 5000))
 ALT_PORT=$((PORT + 1))
+FOREIGN_PORT=$((PORT + 2))
+FOREIGN_PID=
 LIVE_OPERATORS=()
 
 cleanup_operator() {
@@ -22,6 +24,7 @@ cleanup_operator() {
     FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_OPERATOR_PORT="$port" \
       "$OPERATOR" stop >/dev/null 2>&1 || true
   done
+  [ -z "$FOREIGN_PID" ] || kill -TERM "$FOREIGN_PID" 2>/dev/null || true
   fm_test_cleanup
 }
 trap cleanup_operator EXIT
@@ -46,10 +49,23 @@ done
 printf 'home=%s root=%s token_file=%s cwd=%s args=%s\n' \
   "$FM_HOME" "$FM_ROOT_OVERRIDE" "$FM_OPERATOR_TOKEN_FILE" "$(pwd -P)" "$*" >> "$FM_OPERATOR_FAKE_LOG"
 exec "$FM_OPERATOR_FAKE_NODE" \
-  -e 'require("node:http").createServer((_q, r) => r.end("ok")).listen(Number(process.argv[1]), "127.0.0.1")' \
+  -e 'require("node:http").createServer((_q, r) => { r.writeHead(401, { "Content-Type": "application/json" }); r.end(JSON.stringify({ error: "A valid operator session token is required." })) }).listen(Number(process.argv[1]), "127.0.0.1")' \
   "$port"
 SH
 chmod +x "$TMP_ROOT/fake-vite"
+
+# A listener that speaks HTTP but is not this home's operator.
+start_foreign_listener() { # <port>
+  "$FAKE_NODE" -e 'require("node:http").createServer((_q, r) => r.end("not the operator")).listen(Number(process.argv[1]), "127.0.0.1")' "$1" &
+  FOREIGN_PID=$!
+  local attempt=0
+  while [ "$attempt" -lt 100 ]; do
+    if ( exec 3<>"/dev/tcp/127.0.0.1/$1" ) >/dev/null 2>&1; then return 0; fi
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  fail "the foreign listener never bound 127.0.0.1:$1"
+}
 
 run_operator() { # <home> <port> <command...>
   local home=$1 port=$2
@@ -135,6 +151,21 @@ test_port_change_terminates_the_recorded_operator() {
   pass "operator: a changed port stops the recorded process instead of orphaning it"
 }
 
+test_refuses_a_port_held_by_a_foreign_listener() {
+  local home err rc
+  home="$TMP_ROOT/foreign-home"
+  mkdir -p "$home"
+  err="$TMP_ROOT/foreign.err"
+  start_foreign_listener "$FOREIGN_PORT"
+  run_operator "$home" "$FOREIGN_PORT" start >/dev/null 2>"$err"; rc=$?
+  kill -TERM "$FOREIGN_PID" 2>/dev/null || true
+  wait "$FOREIGN_PID" 2>/dev/null || true
+  [ "$rc" -ne 0 ] || fail "operator start reported itself live on a port owned by another process"
+  assert_contains "$(cat "$err")" "already held by another process" "foreign-listener refusal was not explicit"
+  assert_absent "$home/state/operator-runtime" "a refused start still recorded a runtime"
+  pass "operator: a loopback port held by another process is refused, not reported live"
+}
+
 test_token_binding_refuses_cross_home_reuse() {
   local first second err rc
   first="$TMP_ROOT/live-home"
@@ -154,6 +185,7 @@ test_refuses_an_out_of_range_port
 test_live_start_and_token_bootstrap
 test_start_refuses_without_a_production_build
 test_port_change_terminates_the_recorded_operator
+test_refuses_a_port_held_by_a_foreign_listener
 test_token_binding_refuses_cross_home_reuse
 
 echo "# fm-operator.test.sh: all assertions passed"

@@ -218,8 +218,8 @@ function ObserveView({
   async function send() {
     if (!previewId) return
     setSubmitting(true); setError('')
-    try { setDelivery(await confirm(previewId)); setPreviewId(''); setConfirmed(false) }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Instruction could not be sent.') }
+    try { setDelivery(await confirm(previewId)); setPreview(null); setPreviewId(''); setConfirmed(false) }
+    catch (reason) { setPreviewId(''); setConfirmed(false); setError(reason instanceof Error ? reason.message : 'Instruction could not be sent.') }
     finally { setSubmitting(false) }
   }
 
@@ -245,7 +245,10 @@ function ObserveView({
       <Switch checked={confirmed} onChange={(_, data) => setConfirmed(data.checked)} label="I reviewed the exact target and instruction" />
       <Button appearance="primary" disabled={!confirmed || !previewId || !snapshot.trust.capabilities.sendInstruction || submitting} onClick={() => void send()}>{submitting ? 'Sending…' : 'Send instruction'}</Button>
       {!snapshot.trust.capabilities.sendInstruction && <p className="capability-note">Fixture mode is read-only. Live sessions enable confirmed sends.</p>}
-      {delivery && <p className="success-note" role="status">Instruction accepted by {delivery.owner} for {delivery.durableId}.</p>}
+    </section>}
+    {delivery && <section className="review-surface" aria-label="Instruction delivery result">
+      <div className="title-row"><h2>Instruction sent</h2><Badge appearance="filled" color="success">Send performed</Badge></div>
+      <p className="success-note" role="status">Instruction accepted by {delivery.owner} for {delivery.durableId}.</p>
     </section>}
   </div>
 }
