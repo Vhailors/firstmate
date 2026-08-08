@@ -874,7 +874,13 @@ families_for_changed_path() {
       printf '%s\n' backend-dispatch
       printf '%s\n' real-herdr-gated
       ;;
-    bin/fm-pi-primary.sh|bin/fm-watch*|bin/fm-wake*|\
+    bin/fm-pi-primary.sh)
+      # The Pi primary launcher owns both extension isolation (watcher/wake) and
+      # the portable decision board (pure contract), so it selects both families.
+      printf '%s\n' watcher-wake-lock
+      printf '%s\n' pure-contract-unit
+      ;;
+    bin/fm-watch*|bin/fm-wake*|\
     bin/fm-classify-lib.sh|bin/fm-daemon*|bin/fm-turnend-guard*|bin/fm-guard.sh)
       printf '%s\n' watcher-wake-lock
       ;;
@@ -941,7 +947,7 @@ families_for_changed_path() {
       # lane's contract coverage re-runs.
       printf '%s\n' real-herdr-gated
       ;;
-    bin/fm-lint.sh|bin/fm-install-shellcheck.sh|bin/fm-pi-primary.sh|\
+    bin/fm-lint.sh|bin/fm-install-shellcheck.sh|\
     bin/fm-brief.sh|bin/fm-ensure-agents-md.sh|bin/fm-crew-state.sh|\
     bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\
     bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\

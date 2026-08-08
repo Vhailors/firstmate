@@ -697,7 +697,7 @@ test_pi_crewmate_without_workflow_launches_without_fan_out() {
   rm -rf "$CASE_DIR/pi-dynamic-workflows"
   mkdir -p "$CASE_DIR/empty-pi-agent"
 
-  out=$(FM_TEST_PI_WORKFLOW_EXTENSION= \
+  out=$(FM_TEST_PI_WORKFLOW_EXTENSION='' \
     FM_TEST_PI_CODING_AGENT_DIR="$CASE_DIR/empty-pi-agent" \
     run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
   status=$?

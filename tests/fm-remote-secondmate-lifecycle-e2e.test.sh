@@ -486,7 +486,8 @@ PROJECTS_BEFORE=$(projects_snapshot "$TMP_ROOT/seed-parent/projects")
 
 if FM_SECONDMATE_CHARTER='Unsupplied origin charter.' FM_SECONDMATE_SCOPE='unsupplied origin' \
   seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-noorigin remote-mac "$REMOTE_ROOT" \
-  "$TMP_ROOT/seed-noorigin-home" beta > "$TMP_ROOT/seed-noorigin.out" 2>&1; then
+  "$TMP_ROOT/seed-noorigin-home" --herdr-session fm-remote beta \
+  > "$TMP_ROOT/seed-noorigin.out" 2>&1; then
   fail "seeding an uncloned project with no origin claimed success"
 fi
 assert_grep 'pass beta=<origin-url>' "$TMP_ROOT/seed-noorigin.out" \
@@ -495,7 +496,7 @@ assert_absent "$TMP_ROOT/seed-noorigin-home" "the unresolvable origin still prov
 
 if FM_SECONDMATE_CHARTER='Unsafe origin charter.' FM_SECONDMATE_SCOPE='unsafe origin' \
   seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-unsafe remote-mac "$REMOTE_ROOT" \
-  "$TMP_ROOT/seed-unsafe-home" 'beta=ext::git-upload-pack' \
+  "$TMP_ROOT/seed-unsafe-home" --herdr-session fm-remote 'beta=ext::git-upload-pack' \
   > "$TMP_ROOT/seed-unsafe.out" 2>&1; then
   fail "seeding accepted a remote-helper origin the remote host would execute"
 fi
@@ -505,7 +506,7 @@ assert_absent "$TMP_ROOT/seed-unsafe-home" "the unsafe origin still provisioned 
 
 if FM_SECONDMATE_CHARTER='Local-only charter.' FM_SECONDMATE_SCOPE='local only' \
   seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-localonly remote-mac "$REMOTE_ROOT" \
-  "$TMP_ROOT/seed-localonly-home" "delta=$BETA_ORIGIN" \
+  "$TMP_ROOT/seed-localonly-home" --herdr-session fm-remote "delta=$BETA_ORIGIN" \
   > "$TMP_ROOT/seed-localonly.out" 2>&1; then
   fail "a supplied origin bypassed the local-only delivery-mode refusal"
 fi
@@ -514,7 +515,7 @@ assert_grep 'is local-only and cannot be provisioned remotely' "$TMP_ROOT/seed-l
 
 if FM_SECONDMATE_CHARTER='Unregistered charter.' FM_SECONDMATE_SCOPE='unregistered' \
   seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-unregistered remote-mac "$REMOTE_ROOT" \
-  "$TMP_ROOT/seed-unregistered-home" "gamma=$BETA_ORIGIN" \
+  "$TMP_ROOT/seed-unregistered-home" --herdr-session fm-remote "gamma=$BETA_ORIGIN" \
   > "$TMP_ROOT/seed-unregistered.out" 2>&1; then
   fail "a supplied origin bypassed the project registry requirement"
 fi
@@ -524,7 +525,7 @@ assert_grep 'has no registry record' "$TMP_ROOT/seed-unregistered.out" \
 out=$(FM_SECONDMATE_CHARTER='Own beta delivery on the build Mac.' \
   FM_SECONDMATE_SCOPE='beta delivery and validation' \
   seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-noclone remote-mac "$REMOTE_ROOT" \
-  "$TMP_ROOT/seed-noclone-home" "beta=$BETA_ORIGIN" 2>&1) \
+  "$TMP_ROOT/seed-noclone-home" --herdr-session fm-remote "beta=$BETA_ORIGIN" 2>&1) \
   || fail "seeding refused a registered project whose origin was supplied"$'\n'"$out"
 assert_contains "$out" "home=remote-mac:$TMP_ROOT/seed-noclone-home" \
   "the no-clone seed did not report the host-qualified home"
@@ -614,7 +615,7 @@ FORGE_HOME="$TMP_ROOT/seed-forge-home"
 out=$(FM_SECONDMATE_CHARTER='Own delivery for projects hosted anywhere.' \
   FM_SECONDMATE_SCOPE='multi-forge delivery' \
   seed_env "$ROOT/bin/fm-remote-home-seed.sh" seed-forge remote-mac "$REMOTE_ROOT" \
-  "$FORGE_HOME" \
+  "$FORGE_HOME" --herdr-session fm-remote \
   'bitbucket-app=https://bitbucket.org/team/bitbucket-app.git' \
   'ghe-app=https://git.example.com/org/ghe-app.git' \
   'gitlab-app=ssh://git@gitlab.self.hosted:2222/group/subgroup/gitlab-app.git' \
