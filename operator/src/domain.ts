@@ -85,6 +85,16 @@ export function previewInstruction(
   const trimmed = instruction.trim()
   if (!trimmed) throw new Error('Instruction text is required.')
   if (trimmed.length > 2_000) throw new Error('Instruction exceeds the 2,000 character safety bound.')
+  if (trimmed === '--key') {
+    throw new Error('Instruction text must not be the fm-send "--key" control selector.')
+  }
+  // fm-send delivers one line of literal text and the backends type the argument
+  // raw, so an embedded newline submits a partial turn and an embedded escape
+  // clears the composer mid-typing. Refusing here keeps the previewed argv and
+  // the delivered keystrokes the same thing.
+  if (/\p{Cc}/u.test(trimmed)) {
+    throw new Error('Instruction text must be one line without control characters.')
+  }
   return {
     worker,
     instruction: trimmed,
@@ -100,6 +110,6 @@ export function previewInstruction(
       environment: { FM_HOME: '<server-configured-home>' },
     },
     confirmationRequired: true,
-    auditSummary: `Dry-run only. Resolve ${worker.id} from state/${worker.id}.meta, then delegate composer and submit checks to fm-send.`,
+    auditSummary: `No send performed. Confirmation re-resolves ${worker.id} from state/${worker.id}.meta, then delegates composer and submit checks to fm-send.`,
   }
 }

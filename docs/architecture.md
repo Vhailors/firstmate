@@ -56,6 +56,9 @@ The snapshot strips control sequences, retains only capture metadata and literal
 The default path remains local-only; live GitHub enrichment exists only behind the bearings `--include-prs` opt-in.
 Optional Relay integrates with the watcher only after explicit opt-in; [configuration.md](configuration.md#relay-env) owns its generated-artifact and dispatch mechanics.
 
+A locked primary session start also ensures the home-bound loopback operator after bootstrap by calling [`bin/fm-operator.sh`](../bin/fm-operator.sh), which owns that lifecycle end to end; the digest composer only reports what the owner script returns.
+A lock-refused session and a marked secondmate home never reach that step, `config/operator-autostart` or `FM_OPERATOR_AUTOSTART` set to `off` declines it, and [`operator-control-plane.md`](operator-control-plane.md) owns every operator capability and safety boundary beyond this hook.
+
 At session start, `bin/fm-session-start.sh` emits exactly one primary-harness supervision block rendered by `bin/fm-supervision-instructions.sh` from `docs/supervision-protocols/`.
 That block owns the live wait shape for the running primary harness: Claude's Stop `asyncRewake` hook owns tokenless re-arm cycles, Grok uses background-notify cycles, Codex uses bounded foreground checkpoints, Pi and pi-signed use the same two tracked primary extensions, and OpenCode uses its TUI plugin.
 `bin/fm-watch-arm.sh` remains the verified arm wrapper for protocols that call it; it forks the watcher as a tracked child, verifies it is genuinely alive with a fresh liveness beacon, and prints an honest `started`, `attached`, or nonzero `FAILED` status.

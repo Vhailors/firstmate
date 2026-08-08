@@ -24,6 +24,23 @@ Wake, watcher, away-mode, and Relay-specific state mechanics remain with their n
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
 
+## Operator runtime (config/operator-autostart / config/operator-port / config/operator-token)
+
+An ordinary primary home's locked session start calls [`bin/fm-operator.sh`](../bin/fm-operator.sh) after bootstrap to ensure the live loopback operator.
+A regular `config/operator-autostart` file whose first line is exactly `off` disables that ensure; absence and every other value keep the default on.
+`FM_OPERATOR_AUTOSTART` overrides that file for one invocation, so a harness driving the digest without a writable home config can still decline the long-lived server.
+Marked secondmate homes and lock-refused sessions never start the operator.
+
+`config/operator-port` may contain one loopback port from 1024 through 65535, while `FM_OPERATOR_PORT` overrides it for the current command.
+An absent setting uses port 4173.
+The launcher records the running process in `state/operator-runtime` and appends build and server output to `state/operator.log`, so diagnostics from an earlier failed start survive the next one; the script header owns those exact record fields and lifecycle commands.
+It serves the operator's production build and never the development server, and a runtime record it can no longer reuse is stopped before it is replaced.
+
+The launcher generates `config/operator-token` with mode `0600` on first start and reuses it later.
+Its record binds the token to the canonical `FM_HOME`, and both the shell launcher and web server reject a mismatched home, unsafe file type, loose permissions, or malformed token.
+These three operator config files and the two runtime files stay home-local and are never inherited into secondmate homes.
+See [`operator/README.md`](../operator/README.md) for current startup and browser bootstrap commands.
+
 ## Pi Calm preference (config/calm)
 
 The Pi Calm extension stores the captain's home-local presentation choice in gitignored `config/calm` under the effective Firstmate home, resolved from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then the tracked code root derived from the extension path, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.

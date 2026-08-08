@@ -382,7 +382,7 @@
     },
     {
       "path": "operator/README.md",
-      "audience": "maintainer-architecture"
+      "audience": "operator-current"
     },
     {
       "path": "operator/public/llms.txt",

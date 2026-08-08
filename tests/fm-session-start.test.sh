@@ -60,6 +60,7 @@ new_world() {
   home="$w/home"
   fakebin="$w/fakebin"
   mkdir -p "$home/state" "$home/data" "$home/config" "$fakebin"
+  printf '%s\n' off > "$home/config/operator-autostart"
   git init -q -b main "$root"
   git -C "$root" commit -q --allow-empty -m init
   printf '%s|%s|%s\n' "$root" "$home" "$fakebin"
@@ -1007,6 +1008,271 @@ EOF
     || fail "the read-once contract is stated $contract_count times instead of once: $out"
 
   pass "the read-once contract is stated once, ahead of the sources it governs"
+}
+
+# make_fake_operator_package <fakebin> <package-dir>: a present operator
+# production bundle plus a vite stand-in that records its launch environment and
+# then binds the loopback port, so fm-operator's readiness probe sees a serving
+# process. The fake toolchain shadows node on PATH, so the resolved real node is
+# baked in for the listener.
+make_fake_operator_package() {
+  local fakebin=$1 pkg=$2 real_node
+  real_node=$(command -v node || true)
+  [ -n "$real_node" ] || fail "node is required to exercise the session-start operator hook"
+  mkdir -p "$pkg/dist"
+  printf '%s\n' '<!doctype html><title>operator</title>' > "$pkg/dist/index.html"
+  cat > "$fakebin/node" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -e) printf '%064d' 0 ;;
+esac
+SH
+  chmod +x "$fakebin/node"
+  cat > "$fakebin/operator-vite" <<SH
+#!/usr/bin/env bash
+set -u
+port=
+prev=
+for arg in "\$@"; do
+  if [ "\$prev" = --port ]; then port=\$arg; fi
+  prev=\$arg
+done
+printf 'home=%s root=%s token_file=%s cwd=%s args=%s\n' \\
+  "\$FM_HOME" "\$FM_ROOT_OVERRIDE" "\$FM_OPERATOR_TOKEN_FILE" "\$(pwd -P)" "\$*" >> "\$FM_OPERATOR_FAKE_LOG"
+exec '$real_node' \\
+  -e 'require("node:http").createServer((_q, r) => { r.writeHead(401, { "Content-Type": "application/json", "X-Firstmate-Operator": "bounded-api" }); r.end(JSON.stringify({ error: "A valid operator session token is required." })) }).listen(Number(process.argv[1]), "127.0.0.1")' \\
+  "\$port"
+SH
+  chmod +x "$fakebin/operator-vite"
+}
+
+test_locked_primary_ensures_live_operator_after_bootstrap() {
+  local rec root home fakebin out log pkg port boot_line operator_line wake_line
+  rec=$(new_world operator-start)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  rm -f "$home/config/operator-autostart"
+  pkg="$TMP_ROOT/operator-start/package"
+  make_fake_operator_package "$fakebin" "$pkg"
+  log="$home/operator-vite.log"
+  port=$((40000 + $$ % 20000))
+
+  # No opt-out file and no FM_OPERATOR_AUTOSTART: the production live-by-default
+  # branch, not the suite-wide seam tests/lib.sh exports.
+  out=$(env -u FM_OPERATOR_AUTOSTART -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" BASH_ENV="${FM_TEST_BASH_ENV:-}" \
+    FM_PI_EXTENSION_ISOLATION="${FM_TEST_PI_ISOLATION:-}" \
+    FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
+    FM_OPERATOR_DIR="$pkg" FM_OPERATOR_PORT="$port" \
+    "$SESSION_START")
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_OPERATOR_PORT="$port" \
+    "$ROOT/bin/fm-operator.sh" stop >/dev/null
+
+  assert_contains "$out" "OPERATOR: live at http://127.0.0.1:$port for $home" \
+    "locked primary session start did not ensure the live operator by default"
+  assert_contains "$(cat "$log")" "home=$home root=$root token_file=$home/config/operator-token" \
+    "session-start operator did not receive the exact home-bound runtime"
+  assert_contains "$(cat "$log")" "cwd=$pkg args=preview " \
+    "session-start operator did not serve the built bundle from the operator package"
+  boot_line=$(printf '%s\n' "$out" | grep -n '^BOOTSTRAP$' | head -1 | cut -d: -f1)
+  operator_line=$(printf '%s\n' "$out" | grep -n '^OPERATOR$' | head -1 | cut -d: -f1)
+  wake_line=$(printf '%s\n' "$out" | grep -n '^WAKE QUEUE$' | head -1 | cut -d: -f1)
+  [ "$boot_line" -lt "$operator_line" ] && [ "$operator_line" -lt "$wake_line" ] \
+    || fail "operator ensure did not run between bootstrap and wake drain"
+  pass "locked primary session start ensures the home-bound live operator by default"
+}
+
+# The home-local opt-out has to hold on its own, without the suite-wide
+# FM_OPERATOR_AUTOSTART seam that tests/lib.sh exports.
+test_home_local_opt_out_declines_the_operator_ensure() {
+  local rec root home fakebin out log pkg port
+  rec=$(new_world operator-opt-out)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' off > "$home/config/operator-autostart"
+  pkg="$TMP_ROOT/operator-opt-out/package"
+  make_fake_operator_package "$fakebin" "$pkg"
+  log="$home/operator-vite.log"
+  port=$((40000 + $$ % 20000 + 3))
+  : > "$log"
+
+  out=$(env -u FM_OPERATOR_AUTOSTART -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" BASH_ENV="${FM_TEST_BASH_ENV:-}" \
+    FM_PI_EXTENSION_ISOLATION="${FM_TEST_PI_ISOLATION:-}" \
+    FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
+    FM_OPERATOR_DIR="$pkg" FM_OPERATOR_PORT="$port" \
+    "$SESSION_START")
+
+  assert_not_contains "$out" "OPERATOR" "the home-local opt-out still emitted an operator section"
+  [ ! -s "$log" ] || fail "the home-local opt-out still launched an operator server"
+  assert_absent "$home/state/operator-runtime" "the home-local opt-out still recorded an operator runtime"
+  pass "a home-local config/operator-autostart off declines the ensure hook"
+}
+
+# A refused session never owns this home's shared mutable state, so it must not
+# take over the home's single loopback endpoint either - the session that does
+# hold the lock owns that runtime record.
+test_lock_refused_session_never_ensures_the_operator() {
+  local rec root home fakebin out log pkg port holder_pid
+  rec=$(new_world operator-lock-refused)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  rm -f "$home/config/operator-autostart"
+  pkg="$TMP_ROOT/operator-lock-refused/package"
+  make_fake_operator_package "$fakebin" "$pkg"
+  log="$home/operator-vite.log"
+  port=$((40000 + $$ % 20000 + 5))
+  : > "$log"
+
+  sleep 300 &
+  holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$home/state/.lock"
+
+  out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" BASH_ENV="${FM_TEST_BASH_ENV:-}" \
+    FM_PI_EXTENSION_ISOLATION="${FM_TEST_PI_ISOLATION:-}" \
+    FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
+    FM_OPERATOR_DIR="$pkg" FM_OPERATOR_PORT="$port" FM_OPERATOR_AUTOSTART=on \
+    "$SESSION_START")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  assert_contains "$out" "READ-ONLY SESSION" "the seeded lock holder did not force a read-only session"
+  assert_not_contains "$out" "OPERATOR" "a lock-refused session still emitted an operator section"
+  [ ! -s "$log" ] || fail "a lock-refused session still launched an operator server"
+  assert_absent "$home/state/operator-runtime" "a lock-refused session still recorded an operator runtime"
+  pass "a lock-refused session leaves the home's live operator to the lock owner"
+}
+
+# A secondmate home is driven by its parent captain, not by a browser control
+# plane of its own, so the marked home never gets the ensure hook.
+test_marked_secondmate_home_never_ensures_the_operator() {
+  local rec root home fakebin out log pkg port
+  rec=$(new_world operator-secondmate-home)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  rm -f "$home/config/operator-autostart"
+  printf '%s\n' "fmtest-sm-operator" > "$home/.fm-secondmate-home"
+  pkg="$TMP_ROOT/operator-secondmate-home/package"
+  make_fake_operator_package "$fakebin" "$pkg"
+  log="$home/operator-vite.log"
+  port=$((40000 + $$ % 20000 + 6))
+  : > "$log"
+
+  out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" BASH_ENV="${FM_TEST_BASH_ENV:-}" \
+    FM_PI_EXTENSION_ISOLATION="${FM_TEST_PI_ISOLATION:-}" \
+    FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
+    FM_OPERATOR_DIR="$pkg" FM_OPERATOR_PORT="$port" FM_OPERATOR_AUTOSTART=on \
+    "$SESSION_START")
+
+  assert_not_contains "$out" "OPERATOR" "a marked secondmate home still emitted an operator section"
+  [ ! -s "$log" ] || fail "a marked secondmate home still launched an operator server"
+  assert_absent "$home/state/operator-runtime" "a marked secondmate home still recorded an operator runtime"
+  pass "a marked secondmate home never ensures a live operator of its own"
+}
+
+# A harness that drives this digest against a home it does not own has to be able
+# to decline the long-lived server without writing that home's config.
+test_env_opt_out_declines_the_operator_ensure() {
+  local rec root home fakebin out log pkg port
+  rec=$(new_world operator-env-opt-out)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  rm -f "$home/config/operator-autostart"
+  pkg="$TMP_ROOT/operator-env-opt-out/package"
+  make_fake_operator_package "$fakebin" "$pkg"
+  log="$home/operator-vite.log"
+  port=$((40000 + $$ % 20000 + 4))
+  : > "$log"
+
+  out=$(FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
+    FM_OPERATOR_DIR="$pkg" FM_OPERATOR_PORT="$port" FM_OPERATOR_AUTOSTART=off \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_not_contains "$out" "OPERATOR" "FM_OPERATOR_AUTOSTART=off still emitted an operator section"
+  [ ! -s "$log" ] || fail "FM_OPERATOR_AUTOSTART=off still launched an operator server"
+  assert_absent "$home/state/operator-runtime" "FM_OPERATOR_AUTOSTART=off still recorded an operator runtime"
+  pass "FM_OPERATOR_AUTOSTART=off declines the ensure hook without a home-local config"
+}
+
+# A malformed secondmate marker is not a secondmate home for any other tracked
+# hook, so the operator gate must reach the same verdict through the shared
+# predicate instead of a bare file test.
+test_operator_ensure_treats_a_malformed_secondmate_marker_as_primary() {
+  local rec root home fakebin out log pkg port
+  rec=$(new_world operator-empty-marker)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  rm -f "$home/config/operator-autostart"
+  : > "$home/.fm-secondmate-home"
+  pkg="$TMP_ROOT/operator-empty-marker/package"
+  make_fake_operator_package "$fakebin" "$pkg"
+  log="$home/operator-vite.log"
+  port=$((40000 + $$ % 20000 + 2))
+
+  out=$(FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
+    FM_OPERATOR_DIR="$pkg" FM_OPERATOR_PORT="$port" FM_OPERATOR_AUTOSTART=on \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_OPERATOR_PORT="$port" \
+    "$ROOT/bin/fm-operator.sh" stop >/dev/null 2>&1 || true
+
+  assert_contains "$out" "OPERATOR: live at http://127.0.0.1:$port for $home" \
+    "an empty secondmate marker silently skipped the operator ensure"
+  pass "session start treats an empty secondmate marker as a primary home for the operator gate"
+}
+
+# The documented default is an unset FM_HOME resolving to the code root, so the
+# ensure hook has to hand its own resolved home to the child instead of relying
+# on a shell-local variable.
+test_operator_ensure_passes_the_default_home_to_its_child() {
+  local rec root home fakebin out log pkg port
+  rec=$(new_world operator-default-home)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  mkdir -p "$root/state" "$root/data" "$root/config"
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  pkg="$TMP_ROOT/operator-default-home/package"
+  make_fake_operator_package "$fakebin" "$pkg"
+  log="$root/operator-vite.log"
+  port=$((40000 + $$ % 20000 + 1))
+
+  out=$(env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT -u FM_HOME \
+    FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" BASH_ENV="${FM_TEST_BASH_ENV:-}" \
+    FM_PI_EXTENSION_ISOLATION="${FM_TEST_PI_ISOLATION:-}" \
+    FM_OPERATOR_VITE_BIN="$fakebin/operator-vite" FM_OPERATOR_FAKE_LOG="$log" \
+    FM_OPERATOR_DIR="$pkg" FM_OPERATOR_PORT="$port" FM_OPERATOR_AUTOSTART=on \
+    "$SESSION_START")
+  FM_HOME="$root" FM_ROOT_OVERRIDE="$root" FM_OPERATOR_PORT="$port" \
+    "$ROOT/bin/fm-operator.sh" stop >/dev/null 2>&1 || true
+
+  assert_not_contains "$out" "OPERATOR: unavailable" \
+    "the ensure hook did not hand its resolved home to fm-operator"
+  assert_contains "$out" "OPERATOR: live at http://127.0.0.1:$port for $root" \
+    "session start with no FM_HOME did not ensure the operator for the default home"
+  assert_contains "$(cat "$log")" "home=$root root=$root" \
+    "the child operator did not receive the session's resolved default home"
+  pass "session start with no FM_HOME in the environment still ensures the operator"
 }
 
 test_herdr_backend_diagnostics_follow_real_session_start() {
@@ -2213,6 +2479,13 @@ test_trace_context_effective_state_is_frozen_after_lock
 test_session_lock_concurrent_single_winner
 test_output_ordering_diagnostics_lead
 test_read_once_contract_is_stated_once_before_its_subject
+test_locked_primary_ensures_live_operator_after_bootstrap
+test_home_local_opt_out_declines_the_operator_ensure
+test_lock_refused_session_never_ensures_the_operator
+test_marked_secondmate_home_never_ensures_the_operator
+test_env_opt_out_declines_the_operator_ensure
+test_operator_ensure_treats_a_malformed_secondmate_marker_as_primary
+test_operator_ensure_passes_the_default_home_to_its_child
 test_herdr_backend_diagnostics_follow_real_session_start
 test_session_start_relaunches_missing_pi_secondmate
 test_deferred_relaunch_is_always_reported
