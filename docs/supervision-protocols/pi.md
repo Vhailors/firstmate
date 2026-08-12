@@ -2,6 +2,7 @@ Mode: Pi extension background wake.
 
 When this session owns supervision and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
+   After handling all emitted wakes and reconciling open decisions, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
 2. Confirm the Pi primary was launched through `__FM_PI_LAUNCHER__`, which disables extension discovery and explicitly loads both required extensions; if not, restart through that launcher.
 3. First cycle only: make the one required `fm_watch_arm_pi` call.
    Use `/fm-watch-arm-pi` only as a human-entered fallback.

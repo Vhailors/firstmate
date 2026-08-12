@@ -14,6 +14,23 @@ set -u
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-dispatch-profile)
 
+make_spawn_pi_probe() {
+  local fakebin=$1 tool=$2
+  cat > "$fakebin/$tool" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = --help ]; then
+  if [ "${FM_FAKE_PI_VERSION:-0.84.0}" = 0.82.0 ]; then
+    printf '%s\n' 'Pi 0.82.0' 'Options: --help'
+  else
+    printf '%s\n' "Pi ${FM_FAKE_PI_VERSION:-0.84.0}" 'Options: --help --tui-mode <mode>'
+  fi
+fi
+exit 0
+SH
+  chmod +x "$fakebin/$tool"
+}
+
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -48,7 +65,9 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse pi-signed
+  fm_fake_exit0 "$fakebin" treehouse
+  make_spawn_pi_probe "$fakebin" pi
+  make_spawn_pi_probe "$fakebin" pi-signed
   printf '%s\n' "$fakebin"
 }
 
@@ -117,6 +136,7 @@ run_spawn() {
     FM_PI_DYNAMIC_WORKFLOWS_EXTENSION="${FM_TEST_PI_WORKFLOW_EXTENSION-$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts}" \
     PI_CODING_AGENT_DIR="${FM_TEST_PI_CODING_AGENT_DIR:-}" \
     FM_FAKE_LAUNCH_LOG="$launchlog" FM_FAKE_ENV_LOG="$CASE_DIR/env.log" GROK_HOME="$home/grok-home" \
+    FM_FAKE_PI_VERSION="${FM_TEST_PI_VERSION:-0.84.0}" \
     HOME="${FM_TEST_HOME:-$HOME}" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
@@ -445,6 +465,7 @@ test_claude_threads_model_and_effort() {
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "claude --dangerously-skip-permissions --model 'sonnet' --effort 'high'" \
     "claude launch did not thread model and effort flags"
+  assert_not_contains "$launch" "--tui-mode" "non-Pi launches must not receive Pi's TUI mode override"
   pass "claude receives --model and --effort profile flags"
 }
 
@@ -566,8 +587,8 @@ test_pi_threads_model_and_max_effort() {
   expect_code 0 "$status" "pi spawn with max effort should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi openai-codex/gpt-5.6-sol max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=pi FM_PI_EXTENSION_ISOLATION=1 pi --no-extensions --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e '$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts' -e '$HOME_DIR/state/$id.pi-ext.ts'" \
-    "pi launch did not isolate extensions or thread the requested workflow, model, and max thinking level"
+  assert_contains "$launch" "FM_PI_HARNESS=pi FM_PI_EXTENSION_ISOLATION=1 '$FAKEBIN_DIR/pi' --tui-mode regular --no-extensions --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e '$CASE_DIR/pi-dynamic-workflows/extensions/workflow.ts' -e '$HOME_DIR/state/$id.pi-ext.ts'" \
+    "pi launch did not isolate extensions, force the regular TUI, or thread the requested workflow, model, and max thinking level"
   assert_not_contains "$launch" "--no-skills" \
     "default Pi crewmate launch unexpectedly disabled skills"
   assert_not_contains "$launch" "FM_FIRSTMATE_PI_LAUNCH_BRIEF=" \
@@ -636,7 +657,7 @@ test_pi_thin_does_not_change_secondmate_template() {
   status=$?
   expect_code 0 "$status" "Pi secondmate spawn should succeed with thin config present"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_EXTENSION_ISOLATION=1 pi --no-extensions -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
+  assert_contains "$launch" "FM_PI_EXTENSION_ISOLATION=1 '$FAKEBIN_DIR/pi' --tui-mode regular --no-extensions -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
     "Pi secondmate did not preserve its isolated coordinator template"
   assert_not_contains "$launch" "pi-dynamic-workflows" \
     "Pi secondmate incorrectly loaded workflow fan-out"
@@ -707,7 +728,7 @@ test_pi_crewmate_without_workflow_launches_without_fan_out() {
     "absent Pi workflow extension still referenced the workflow package"
   assert_not_contains "$launch" "__PIWORKFLOW__" \
     "absent Pi workflow extension left the unresolved placeholder in the launch"
-  assert_contains "$launch" "FM_PI_EXTENSION_ISOLATION=1 pi --no-extensions" \
+  assert_contains "$launch" "FM_PI_EXTENSION_ISOLATION=1 '$FAKEBIN_DIR/pi' --tui-mode regular --no-extensions" \
     "absent Pi workflow extension broke the Pi isolation template"
   pass "Pi workers launch without fan-out when the workflow extension is absent"
 }
@@ -725,8 +746,8 @@ test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
   assert_contains "$out" "spawned $id harness=pi-signed" "pi-signed spawn did not preserve its visible identity"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi-signed openai-codex/gpt-5.6-sol max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=pi-signed FM_PI_EXTENSION_ISOLATION=1 pi-signed --no-extensions --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
-    "pi-signed launch did not share Pi's model, thinking, and extension semantics"
+  assert_contains "$launch" "FM_PI_HARNESS=pi-signed FM_PI_EXTENSION_ISOLATION=1 '$FAKEBIN_DIR/pi-signed' --tui-mode regular --no-extensions --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
+    "pi-signed launch did not force the regular TUI with Pi's model, thinking, and extension semantics"
   assert_contains "$launch" "fm-operational-input.sh' encode launch-brief" \
     "pi-signed launch lost the canonical typed launch-brief envelope"
   assert_present "$HOME_DIR/state/$id.pi-ext.ts" "pi-signed launch did not install Pi's turn-end extension"
@@ -743,6 +764,36 @@ test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
   assert_contains "$ext" '"--source", "pi-ext"' "pi extension does not attribute its semantic source"
   assert_contains "$ext" 'pi.on("turn_end"' "pi extension lost the turn-end notification touch"
   pass "pi-signed shares Pi launch semantics while preserving its configured and recorded identity"
+}
+
+test_pi_tui_mode_probe_is_safe_for_old_and_new_pi() {
+  local harness version rec id out status launch
+  for harness in pi pi-signed; do
+    for version in 0.82.0 0.84.0; do
+      id="profile-${harness}-tui-${version//./}-z8d"
+      rec=$(make_spawn_case "profile-__MODELFLAG__-${harness}-tui-${version//./}" "$harness" "$id")
+      read_case_record "$rec"
+
+      out=$(FM_TEST_PI_VERSION="$version" \
+        run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+        "$id" "$PROJ_DIR")
+      status=$?
+      expect_code 0 "$status" "$harness $version spawn should succeed"
+      launch=$(cat "$LAUNCH_LOG")
+      assert_contains "$launch" "'$FAKEBIN_DIR/$harness'" \
+        "$harness $version launch must use the executable selected for probing"
+      assert_not_contains "$launch" "FM_PI_HARNESS=$harness $harness" \
+        "$harness $version launch must not re-resolve a bare executable in the worker"
+      if [ "$version" = 0.82.0 ]; then
+        assert_not_contains "$launch" "--tui-mode" \
+          "$harness $version launch must omit unsupported --tui-mode"
+      else
+        assert_contains "$launch" "'$FAKEBIN_DIR/$harness' --tui-mode regular" \
+          "$harness $version launch must preserve the regular TUI"
+      fi
+    done
+  done
+  pass "Pi launch probing omits --tui-mode on older Pi and preserves it on supporting Pi"
 }
 
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata() {
@@ -786,8 +837,8 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
     "pi-signed secondmate spawn did not preserve its runtime identity"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi-signed default default
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=pi-signed FM_PI_EXTENSION_ISOLATION=1 pi-signed --no-extensions -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
-    "pi-signed secondmate did not share Pi's primary extension launch shape"
+  assert_contains "$launch" "FM_PI_HARNESS=pi-signed FM_PI_EXTENSION_ISOLATION=1 '$FAKEBIN_DIR/pi-signed' --tui-mode regular --no-extensions -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
+    "pi-signed secondmate did not force the regular TUI with Pi's primary extension launch shape"
   pass "pi-signed is a distinct persistent secondmate runtime with shared Pi supervision semantics"
 }
 
@@ -903,6 +954,7 @@ test_pi_thin_does_not_change_secondmate_template
 test_pi_crewmate_missing_workflow_refuses_before_metadata
 test_pi_crewmate_without_workflow_launches_without_fan_out
 test_pi_project_settings_track_no_workflow_package
+test_pi_tui_mode_probe_is_safe_for_old_and_new_pi
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
 test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity
