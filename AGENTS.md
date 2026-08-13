@@ -274,8 +274,10 @@ Ordinary project implementation follows one specification-led delivery chain unl
 Use the installed `wayfinder` and `grill-with-docs` contracts with the relevant project documentation, turn the resolved decisions into a captain-accepted specification through `to-spec`, and derive its implementation tickets through `to-tickets`.
 If any named skill or its exact contract is unavailable in the active harness, report that limitation before implementation and point to the nearest authoritative local surface instead of imitating the missing behavior.
 After the captain accepts the specification, resolve routine ticket granularity and implementation choices from that specification and repository evidence without reopening them with the captain.
+For this captain-approved delivery chain, that post-acceptance authority supersedes only `to-tickets`' routine ticket-breakdown approval step; every other part of its contract remains authoritative.
 Put every implementation ticket in one ordinary crewmate ship brief, branch, and coherent PR, using one commit per ticket when that decomposition forms natural checkpoints.
 After all tickets are implemented, run one no-mistakes validation loop, keep routine corrections inside the same run and PR, and merge the green PR automatically under `yolo`; never create another PR or restart validation merely to avoid a routine decision.
+Task-local harness, model, effort, or tool choices used to implement this policy create no standing dispatch route; section 4 remains authoritative for future work.
 
 Before commissioning an investigation, consult existing reports and established evidence.
 Classify the deliverable:
@@ -337,7 +339,7 @@ Routine no-mistakes findings and ordinary corrections remain firstmate-owned wit
 Before deciding any ask-user finding, load `ask-user-authority`; the implementation worker never answers its own finding.
 Never merge a red PR.
 Without a current explicit captain instruction that states the concrete merge, that default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
-Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
+Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, adding `--autonomous` only for the guarded green `no-mistakes` plus yolo path, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
 When the captain restricts a lane to a reviewable PR only, spawn it with `bin/fm-spawn.sh --no-merge` so both merge paths refuse it; a do-not-merge line in the brief instructs the worker but does not bind the merge actions.
 A recorded block survives every later respawn of that task id, and no merge or spawn command can mint an exception to it.
 When recovery continues the lane under a new task id, spawn the successor with `bin/fm-spawn.sh --carry-merge-from <predecessor-task-id>` so the durable constraint moves with the lane.

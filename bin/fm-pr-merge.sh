@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Merge a task's PR after recording pr= and any available pr_head= through
 # bin/fm-pr-check.sh, so teardown can verify landed work after squash merges.
+# The default path requires the caller's explicit merge authority. --autonomous
+# is the standing-yolo path and additionally requires mode=no-mistakes, yolo=on,
+# and fm-crew-state's current-code-matched green run-step verdict before any
+# forge merge call.
 # The full canonical GitHub PR URL is parsed by bin/fm-pr-lib.sh and the derived
 # owner/repository and PR number are passed to gh-axi as separate arguments.
 #
@@ -11,7 +15,7 @@
 # A task dispatched with fm-spawn.sh --no-merge records merge=blocked and is
 # refused here before anything is recorded or merged; bin/fm-merge-authority-lib.sh
 # owns that contract. No merge-command flag lifts the block.
-# Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
+# Usage: fm-pr-merge.sh [--autonomous] <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,6 +27,12 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-merge-authority-lib.sh
 . "$SCRIPT_DIR/fm-merge-authority-lib.sh"
+
+AUTONOMOUS=0
+if [ "${1:-}" = --autonomous ]; then
+  AUTONOMOUS=1
+  shift
+fi
 
 if [ "${1:-}" = --captain-authorized ]; then
   echo "error: --captain-authorized is not supported; a merge command cannot lift merge=blocked" >&2
@@ -85,6 +95,46 @@ fi
 # poll, and reaches no forge call: the refusal must leave no trace of an attempt
 # to land work the captain forbade.
 fm_merge_authority_check "$META" "$ID" || exit 1
+
+metadata_exact_value() {
+  local key=$1 count value
+  count=$(grep -c "^$key=" "$META" 2>/dev/null || true)
+  [ "$count" -eq 1 ] || return 1
+  value=$(grep "^$key=" "$META" | cut -d= -f2-)
+  [ -n "$value" ] || return 1
+  printf '%s\n' "$value"
+}
+
+if [ "$AUTONOMOUS" -eq 1 ]; then
+  MODE=$(metadata_exact_value mode) || {
+    echo "error: autonomous merge requires exactly one readable mode=no-mistakes record" >&2
+    exit 1
+  }
+  YOLO=$(metadata_exact_value yolo) || {
+    echo "error: autonomous merge requires exactly one readable yolo=on record" >&2
+    exit 1
+  }
+  [ "$MODE" = no-mistakes ] || {
+    echo "REFUSED: autonomous merge requires mode=no-mistakes; task $ID records mode=$MODE" >&2
+    exit 1
+  }
+  [ "$YOLO" = on ] || {
+    echo "REFUSED: autonomous merge requires yolo=on; task $ID records yolo=$YOLO" >&2
+    exit 1
+  }
+  CREW_STATE=$("$SCRIPT_DIR/fm-crew-state.sh" "$ID") || {
+    echo "error: autonomous merge could not determine current validation state for task $ID" >&2
+    exit 1
+  }
+  case "$CREW_STATE" in
+    "state: done · source: run-step · checks green: PR ready for review"*) ;;
+    *)
+      echo "REFUSED: autonomous merge requires a current-code-matched green no-mistakes run for task $ID" >&2
+      echo "current state: $CREW_STATE" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
 grep -qxF "pr=$URL" "$META" || {

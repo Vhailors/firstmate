@@ -14,6 +14,8 @@
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
 #   (h) repo override args fail fast because the repo comes from the URL
+#   (i) autonomous merge requires no-mistakes, yolo, and current green run state
+#   (j) explicit-authority merge remains independent of autonomous prerequisites
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -82,6 +84,42 @@ SH
 exit 0
 SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+add_no_mistakes_mock() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "axi status") printf '%s\n' "${FM_TEST_NM_STATUS:-}" ;;
+  "axi logs") printf '%s\n' "${FM_TEST_NM_CI_LOG:-}" ;;
+  "runs --limit") printf '%s\n' "${FM_TEST_NM_RUNS:-}" ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+}
+
+make_validation_worktree() {
+  local case_dir=$1
+  mkdir -p "$case_dir/wt"
+  git -C "$case_dir/wt" init --quiet --initial-branch=main
+  printf 'validated\n' > "$case_dir/wt/work.txt"
+  git -C "$case_dir/wt" add work.txt
+  git -C "$case_dir/wt" commit --quiet -m validated
+  git -C "$case_dir/wt" checkout --quiet -b fm/task-x1
+}
+
+green_status() {
+  local case_dir=$1 head
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  cat <<EOF
+id: run-green
+branch: fm/task-x1
+head: $head
+status: ci
+steps[1]{step,status,findings}:
+  ci,running,0
+EOF
 }
 
 run_pr_merge() {
@@ -301,6 +339,74 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_autonomous_merge_accepts_only_current_green_lane() {
+  local case_dir rc
+  case_dir=$(make_case autonomous-green)
+  make_validation_worktree "$case_dir"
+  printf 'yolo=on\n' >> "$case_dir/state/task-x1.meta"
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  add_no_mistakes_mock "$case_dir"
+  : > "$case_dir/gh-axi.log"
+
+  FM_TEST_NM_STATUS=$(green_status "$case_dir") \
+  FM_TEST_NM_CI_LOG='all CI checks passed - still monitoring until merged or closed' \
+    run_pr_merge "$case_dir" --autonomous task-x1 https://github.com/example/repo/pull/31 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+
+  expect_code 0 "$rc" "autonomous-green: current green no-mistakes yolo lane should merge"
+  grep -qxF 'pr merge 31 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "autonomous-green: guarded path did not reach the expected forge merge"
+  pass "autonomous merge accepts a current-code-matched green no-mistakes yolo lane"
+}
+
+test_autonomous_merge_refuses_wrong_authority_or_validation() {
+  local label case_dir rc status ci_log
+  for label in blocked yolo-off wrong-mode red-current stale-run; do
+    case_dir=$(make_case "autonomous-$label")
+    make_validation_worktree "$case_dir"
+    status=$(green_status "$case_dir")
+    ci_log='all CI checks passed - still monitoring until merged or closed'
+    case "$label" in
+      blocked)
+        printf 'yolo=on\nmerge=blocked\n' >> "$case_dir/state/task-x1.meta"
+        ;;
+      yolo-off)
+        printf 'yolo=off\n' >> "$case_dir/state/task-x1.meta"
+        ;;
+      wrong-mode)
+        sed -i 's/^mode=no-mistakes$/mode=direct-PR/' "$case_dir/state/task-x1.meta"
+        printf 'yolo=on\n' >> "$case_dir/state/task-x1.meta"
+        ;;
+      red-current)
+        printf 'yolo=on\n' >> "$case_dir/state/task-x1.meta"
+        ci_log='CI checks running'
+        ;;
+      stale-run)
+        printf 'yolo=on\n' >> "$case_dir/state/task-x1.meta"
+        status=$(printf '%s\n' "$status" | sed 's/^head: .*/head: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/')
+        ;;
+    esac
+    add_gh_mocks "$case_dir" cccccccccccccccccccccccccccccccccccccccc
+    add_no_mistakes_mock "$case_dir"
+    : > "$case_dir/gh-axi.log"
+
+    set +e
+    FM_TEST_NM_STATUS="$status" FM_TEST_NM_CI_LOG="$ci_log" \
+      run_pr_merge "$case_dir" --autonomous task-x1 https://github.com/example/repo/pull/32 \
+        > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "autonomous-$label: unsafe autonomous merge should refuse"
+    assert_no_grep 'pr merge' "$case_dir/gh-axi.log" \
+      "autonomous-$label: unsafe lane reached the forge merge"
+    assert_no_grep '^pr=' "$case_dir/state/task-x1.meta" \
+      "autonomous-$label: refusal recorded PR state before satisfying its guard"
+  done
+  pass "autonomous merge refuses blocked, non-yolo, non-pipeline, red, and stale-run lanes"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -311,3 +417,5 @@ test_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
+test_autonomous_merge_accepts_only_current_green_lane
+test_autonomous_merge_refuses_wrong_authority_or_validation
