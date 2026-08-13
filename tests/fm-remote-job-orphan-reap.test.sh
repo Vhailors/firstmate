@@ -39,8 +39,6 @@ alive() { kill -0 "$1" 2>/dev/null; }
 
 pgid_of() { ps -p "$1" -o pgid= 2>/dev/null | tr -d '[:space:]'; }
 
-ppid_of() { ps -p "$1" -o ppid= 2>/dev/null | tr -d '[:space:]'; }
-
 # Wait up to <seconds> for <pid> to exit; 0 when it did.
 wait_gone() { # <pid> <seconds>
   local pid=$1 deadline=$(( $(date +%s) + $2 ))
@@ -56,6 +54,23 @@ wait_child() { # <pid> <seconds>
   local pid=$1 deadline=$(( $(date +%s) + $2 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
     [ -n "$(pgrep -P "$pid" 2>/dev/null || true)" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# Echo the first persisted ready worker pid other than <old-pid>. A child can
+# be visible to pgrep before it owns the worker lock; only a published pid and
+# matching heartbeat make it eligible for the supervisor's restart path.
+wait_ready_worker_after() { # <state-root> <old-pid> <seconds>
+  local state_root=$1 old=$2 deadline=$(( $(date +%s) + $3 )) pid ready
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    pid=$(cat "$state_root/worker.pid" 2>/dev/null || true)
+    ready=$(cat "$state_root/worker.ready" 2>/dev/null || true)
+    if pid_is_numeric "$pid" && [ "$pid" != "$old" ] && [ "$ready" = "$pid" ] && alive "$pid"; then
+      printf '%s\n' "$pid"
+      return 0
+    fi
     sleep 0.1
   done
   return 1
@@ -114,8 +129,8 @@ build_remote_root "$CASE1/remote-root"
 WORKER=$(start_worker "$CASE1/remote-root" "$CASE1/account" "$CASE1/remote-jobs") ||
   fail "could not start the fixture remote job worker"
 track "$WORKER"
-wait_child "$WORKER" 10 || fail "the fixture worker never started its serving child"
-SERVE=$(pgrep -P "$WORKER" | head -n 1)
+SERVE=$(wait_ready_worker_after "$CASE1/remote-jobs" '' 10) ||
+  fail "the fixture serving child never published worker readiness"
 
 [ "$(pgid_of "$WORKER")" = "$WORKER" ] ||
   fail "the started worker is not its own process group leader, so its tree cannot be signalled as one group"
@@ -123,21 +138,21 @@ SERVE=$(pgrep -P "$WORKER" | head -n 1)
   fail "the serving child is outside the worker's process group"
 pass "the Linux start path puts the whole worker tree in its own process group"
 
-[ "$(ppid_of "$WORKER")" = 1 ] ||
-  fail "the fixture worker is not orphaned to init, so this case does not reproduce the leak"
+# The launch subshell has returned while the worker remains live. Its exact
+# parent is init on an ordinary host and the runner's child subreaper in some
+# containers, so a specific PPID is not part of the detached-worker contract.
+alive "$WORKER" || fail "the fixture worker did not remain live after its launcher returned"
 
-# The exact teardown shape that leaked in production: a fixture cleanup removes
-# the worker's state root and then stops only the single recorded worker pid -
-# which is the serving child, not the supervisor. KILL makes that obsolete
-# teardown reproduction independent of the graceful handler's missing-state
-# refusal. The supervisor respawns, so the tree survives a teardown that looks
-# complete.
-rm -rf "$CASE1/remote-jobs"
+# The leak boundary is stopping only the recorded worker pid, which is the
+# serving child rather than its detached supervisor. Keep the ownership state
+# intact so this exercises the supervisor's genuine restart path; deleting it
+# now intentionally makes unsafe restart cleanup refuse instead of respawning.
 kill -KILL "$SERVE" 2>/dev/null || true
 wait_gone "$SERVE" 10 || fail "the recorded serving child did not stop"
 alive "$WORKER" || fail "the fixture supervisor did not survive a lone child kill, so this case no longer covers the leak"
-wait_child "$WORKER" 15 || fail "the supervisor did not respawn after its recorded child pid was killed"
-pass "removing the state root and killing the recorded worker pid leaves the tree running at ppid 1"
+REPLACEMENT=$(wait_ready_worker_after "$CASE1/remote-jobs" "$SERVE" 15) ||
+  fail "the supervisor did not publish a ready replacement after its recorded child pid was killed"
+pass "killing only the recorded worker pid leaves the detached supervisor tree running"
 
 # A worker whose code root is intact is never a reap candidate, which is what
 # keeps the account's healthy LaunchAgent worker out of scope.
@@ -147,7 +162,7 @@ alive "$WORKER" || fail "the reaper stopped a worker whose code root still exist
 pass "a worker whose code root still exists is never reaped"
 
 # Prune the code root the way a returned worktree does.
-SURVIVOR=$(pgrep -P "$WORKER" | head -n 1)
+SURVIVOR=$REPLACEMENT
 rm -rf "$CASE1/remote-root"
 wait_gone "$WORKER" 60 || fail "the worker survived its code root being pruned"
 wait_gone "$SURVIVOR" 60 || fail "a serving child outlived the abandoned supervisor"

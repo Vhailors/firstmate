@@ -263,10 +263,21 @@ Proceed on one confident match while naming the project in plain language; ask o
 Route by the nature of the work against each registered secondmate scope, not by a non-exclusive clone list.
 When the captain invokes `/hunt` or authorizes hunting a named bug-bounty program, load `hunt` and route the engagement only through the registered BB secondmate with a this-session packet bind.
 Keep `local-only` work in the main home.
+Keep the accepted-spec implementation stage of ordinary project work in one primary-home crewmate lane unless the captain explicitly routes that delivery elsewhere.
+This exception does not retire, redesign, reseed, or otherwise alter any registered secondmate.
 Send in-scope work to the fitting secondmate unless it is blocked or the captain explicitly redirects it; do not read the secondmate's chat because marked routed replies return through its status or referenced document.
 If no secondmate scope fits, use the main home or discuss creating an appropriate persistent secondmate.
 For one-off or infrequent operational work, start with the simplest direct end-to-end path.
 Do not build wrappers, control planes, policy layers, custom verifiers, or automation unless the direct path exposes a concrete blocker or repeated need that justifies the added machinery.
+
+Ordinary project implementation follows one specification-led delivery chain unless a current captain instruction or project-specific safety restriction requires another path.
+Use the installed `wayfinder` and `grill-with-docs` contracts with the relevant project documentation, turn the resolved decisions into a captain-accepted specification through `to-spec`, and derive its implementation tickets through `to-tickets`.
+If any named skill or its exact contract is unavailable in the active harness, report that limitation before implementation and point to the nearest authoritative local surface instead of imitating the missing behavior.
+After the captain accepts the specification, resolve routine ticket granularity and implementation choices from that specification and repository evidence without reopening them with the captain.
+For this captain-approved delivery chain, that post-acceptance authority supersedes only `to-tickets`' routine ticket-breakdown approval step; every other part of its contract remains authoritative.
+Put every implementation ticket in one ordinary crewmate ship brief, branch, and coherent PR, using one commit per ticket when that decomposition forms natural checkpoints.
+After all tickets are implemented, run one no-mistakes validation loop, keep routine corrections inside the same run and PR, and merge the green PR automatically under `yolo`; never create another PR or restart validation merely to avoid a routine decision.
+Task-local harness, model, effort, or tool choices used to implement this policy create no standing dispatch route; section 4 remains authoritative for future work.
 
 Before commissioning an investigation, consult existing reports and established evidence.
 Classify the deliverable:
@@ -281,6 +292,7 @@ Load `diagnostic-reasoning` before scoping a reported bug and before acting on a
 
 Resolve every ship task's concrete delivery mode and yolo posture at intake, and pass both explicitly to the brief, the spawn, and any scout promotion, which all refuse to guess.
 A current explicit captain instruction wins; otherwise the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
+Ordinary registered work with a captain-accepted specification uses `no-mistakes` with yolo on unless the current instruction or a project-specific safety restriction requires a different posture.
 On a `no-mistakes-prod-only` project, classify the task's surface: internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
 An unregistered project or absent registry resolves to `no-mistakes` with yolo off, and the registration gap goes to the captain.
 Record the resulting mode, yolo, and the one-line reason for any deviation in the backlog item note.
@@ -322,10 +334,12 @@ With `yolo` off, the captain owns ask-user findings, PR merges, and local-only m
 With `yolo` on, firstmate decides routine gates only within the captain's original request and accepted task criteria, and merges only green work.
 Standing `yolo` authority never approves an ask-user Fix that would materially expand that product or engineering contract; destructive, irreversible, and security-sensitive choices remain stronger captain boundaries.
 Complexity alone is not expansion: a difficult correction genuinely required by accepted intent, including explicitly requested complex architecture, remains autonomous.
+After a specification is accepted, escalate only a destructive or irreversible action, a security-sensitive choice, a material expansion or contradiction of that specification, unsafe or red delivery, missing credentials, or another decision that the specification and repository evidence cannot resolve.
+Routine no-mistakes findings and ordinary corrections remain firstmate-owned within that boundary and stay in the current lane, run, and PR.
 Before deciding any ask-user finding, load `ask-user-authority`; the implementation worker never answers its own finding.
 Never merge a red PR.
 Without a current explicit captain instruction that states the concrete merge, that default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
-Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
+Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, adding `--autonomous` only for the guarded green `no-mistakes` plus yolo path, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
 When the captain restricts a lane to a reviewable PR only, spawn it with `bin/fm-spawn.sh --no-merge` so both merge paths refuse it; a do-not-merge line in the brief instructs the worker but does not bind the merge actions.
 A recorded block survives every later respawn of that task id, and no merge or spawn command can mint an exception to it.
 When recovery continues the lane under a new task id, spawn the successor with `bin/fm-spawn.sh --carry-merge-from <predecessor-task-id>` so the durable constraint moves with the lane.
@@ -361,6 +375,7 @@ For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports
 Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and the forge's `pr_head=` when available in the task's meta and arms the watcher's merge poll.
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine authority.
+For a green `no-mistakes` PR with yolo on, merge through the guarded helper without asking the captain again; a red or unsafe result still stops.
 For any custom `state/<id>.check.sh` you write yourself, keep it an ordinary single-link mode-`0700` file, print one line only when firstmate should wake, print nothing otherwise, finish before `FM_CHECK_TIMEOUT`, then bind its current bytes with `bin/fm-check-register.sh <id>` before the watcher may execute it.
 
 Tear down a ship task only after landing is confirmed.
