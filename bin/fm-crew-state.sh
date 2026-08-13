@@ -48,7 +48,9 @@
 #      than trusting a stale status log.
 #
 # Read-only and side-effect free. Always exits 0 on a successful read regardless
-# of state; exit 2 only on a usage error (no id).
+# of state; exit 2 only on a usage error. With --identity, a full run-step result
+# also carries the run id, head, and PR from the same status observation.
+# Usage: fm-crew-state.sh <id> [--identity]
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -68,7 +70,14 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
 
 ID=${1:-}
-[ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
+INCLUDE_RUN_IDENTITY=0
+if [ "${2:-}" = --identity ] && [ "$#" -eq 2 ]; then
+  INCLUDE_RUN_IDENTITY=1
+elif [ "$#" -ne 1 ]; then
+  echo "usage: fm-crew-state.sh <id> [--identity]" >&2
+  exit 2
+fi
+[ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id> [--identity]" >&2; exit 2; }
 
 META="$STATE/$ID.meta"
 LOG="$STATE/$ID.status"
@@ -84,8 +93,15 @@ SEP=' · '
 
 # Emit the one canonical line and exit 0. Detail is optional.
 emit() {  # <state> <source> [detail]
-  local line="state: $1${SEP}source: $2"
+  local line="state: $1${SEP}source: $2" run_id run_head run_pr
   [ -n "${3:-}" ] && line="$line${SEP}$3"
+  if [ "$INCLUDE_RUN_IDENTITY" -eq 1 ] && [ "$2" = run-step ] \
+    && [ "${RUN_SOURCE:-}" = full ] && [ -n "${RUN_OUT:-}" ]; then
+    run_id=$(fm_nm_strip_quotes "$(fm_nm_field "$RUN_OUT" id)")
+    run_head=$(fm_nm_strip_quotes "$(fm_nm_field "$RUN_OUT" head)")
+    run_pr=$(fm_nm_strip_quotes "$(fm_nm_field "$RUN_OUT" pr)")
+    line="$line${SEP}run_id: $run_id${SEP}run_head: $run_head${SEP}run_pr: $run_pr"
+  fi
   printf '%s\n' "$line"
   exit 0
 }
