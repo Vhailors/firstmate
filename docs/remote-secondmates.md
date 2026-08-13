@@ -1,8 +1,11 @@
 # Remote second mates
 
-Remote second mates place a whole persistent Firstmate home on another SSH-reachable host.
+Direct crewmates are the default and remain local to the primary's normal isolated-worktree lifecycle.
+Remote second mates place a whole persistent Firstmate home on another SSH-reachable host only after the relevant home explicitly enables `config/secondmate-routing` with `on`.
 The primary still owns routing and supervision, while the remote home owns its own projects, backlog, and workers.
 Firstmate does not support placing an individual worker remotely or failing a remote route over to a local replacement.
+The implementation-ready direct-remote seam is documented in [`docs/operator-control-plane.md`](operator-control-plane.md#thinkpad-visible-herdr-model): it needs an exact named-session endpoint tuple, primary-owned task binding, ordinary remote worktree and merge ownership, and disposable-host proof before any command is added.
+Existing remote routes remain unchanged and available for recovery, supervision, completion, and retirement when new secondmate routing is off.
 
 The remote second-mate agent itself always runs on the [Herdr backend](herdr-backend.md) in the route's pinned `default` or `fm-remote` session, and every path that provisions or launches one refuses a host that is not ready for that exact selection.
 `default` is the operator-owned visible session for device work, capture, and other captain-facing routes.

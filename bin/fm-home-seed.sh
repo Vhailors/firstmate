@@ -24,7 +24,9 @@
 #       target is safe; a failed return warns because the lease may still be held.
 #       Set FM_SECONDMATE_CHARTER='<charter>' to seed from inline charter text
 #       when no filled charter brief exists. Set FM_SECONDMATE_SCOPE='<scope>'
-#       to override the registry routing scope. Otherwise the registry summary
+#       to override the registry routing scope. New seeds require the home-local
+#       config/secondmate-routing opt-in set to on; existing registered routes
+#       remain available for reseeding and lifecycle recovery. Otherwise the registry summary
 #       and scope are derived from the filled charter brief.
 #   fm-home-seed.sh validate
 #       Refuse records that operational consumers cannot parse, unavailable or
@@ -49,6 +51,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-secondmate-charter-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-secondmate-routing-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-routing-lib.sh"
 
 usage() {
   echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}" >&2
@@ -830,6 +834,13 @@ seed_home() {
   trap seed_exit_cleanup EXIT
 
   validate_registry
+  route_registered=0
+  if [ -f "$REG" ] && secondmate_registry_line_for_id "$REG" "$id"; then
+    route_registered=1
+  fi
+  if [ "$route_registered" -eq 0 ]; then
+    fm_secondmate_routing_require_enabled || return 1
+  fi
   for project in "$@"; do
     validate_seed_project "$project"
   done

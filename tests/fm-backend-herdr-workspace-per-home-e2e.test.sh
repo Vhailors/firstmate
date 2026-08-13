@@ -29,6 +29,7 @@
 #   - teardown closing the right tab (and no other)
 #   - list-live recovery seeing only its own home's tabs, for both homes
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

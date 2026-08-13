@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Full remote secondmate lifecycle over the deterministic generic SSH boundary.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

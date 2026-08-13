@@ -13,7 +13,9 @@ metadata:
 
 Use this reference before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a persistent secondmate, and before editing `data/secondmates.md`.
 
-Keep the always-inline routing rules in `AGENTS.md` authoritative: route by natural-language `scope:`, local-only projects stay with the main firstmate, and secondmates are idle by default.
+Keep the always-inline routing rules in `AGENTS.md` authoritative: direct crewmates are the default for new work, and new persistent secondmate routes require the home-local `config/secondmate-routing` opt-in set to `on`.
+Existing registered secondmate routes remain available for recovery, supervision, completion, and retirement when the opt-in is off.
+Route by natural-language `scope:`, local-only projects stay with the main firstmate, and secondmates are idle by default.
 
 ## Routing table
 

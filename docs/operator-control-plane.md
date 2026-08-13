@@ -106,6 +106,9 @@ The initial adapter does not claim that remote visible-session proof exists.
 Any `fm-thinkpad` target therefore renders unavailable and refuses action.
 It may not fall back to the VPS `fm-remote` session, an ambient Herdr session, raw or hidden SSH execution, a detached terminal, or direct Chrome or Unity automation.
 A future implementation remains blocked until a tested existing-helper extension can return the complete tuple and perform session-explicit Herdr calls without becoming a second runtime backend.
+The current FirstMate shell path supports only whole-home remote secondmates, not direct primary-owned remote crewmates; this migration keeps the ThinkPad route unchanged rather than introducing an unproven remote worker seam.
+An implementation-ready seam remains blocked on four proofs: extend the existing `fm-on.sh` and account-owned remote-job boundary to return a named-session tuple, bind that tuple to primary-owned task metadata, run the ordinary remote worktree and merge path on the remote host without creating a second orchestrator, and exercise reconnect, endpoint drift, busy/composer refusal, green-only merge, and unavailable-host cases in a disposable ThinkPad Herdr session.
+Only after those proofs pass should a direct remote-crewmate command be added; until then, any ThinkPad direct-worker request remains an explicit blocker rather than a hidden fallback to a persistent secondmate or SSH process.
 
 ## Mutation protocol
 

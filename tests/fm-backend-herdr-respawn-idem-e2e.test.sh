@@ -33,6 +33,7 @@
 # test's own isolated $SESSION explicitly via --session; the live `default`
 # session is never touched.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

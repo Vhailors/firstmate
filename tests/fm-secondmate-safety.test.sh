@@ -13,6 +13,51 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-secondmate-safety)
 export FM_BACKEND=tmux
 
+# New homes are opt-in to persistent secondmate routing. Existing lifecycle
+# fixtures set FM_SECONDMATE_ROUTING=on through secondmate-helpers.sh.
+test_new_secondmate_routing_defaults_to_direct_crewmates() {
+  local home sub err
+  home="$TMP_ROOT/routing-default-home"
+  sub="$TMP_ROOT/routing-default-subhome"
+  err="$TMP_ROOT/routing-default.err"
+  mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects"
+  fm_git_init_commit "$home/projects/alpha"
+  fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/routing-default-alpha.git"
+  printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-08-13)' > "$home/data/projects.md"
+  scaffold_secondmate_charter "$home" routing-default 'a persistent routing test' alpha
+
+  if env -u FM_SECONDMATE_ROUTING FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" routing-default "$sub" alpha >/dev/null 2>"$err"; then
+    fail "new secondmate seed succeeded without explicit routing opt-in"
+  fi
+  grep -F 'new secondmate routing is disabled' "$err" >/dev/null \
+    || fail "new secondmate refusal did not explain the direct-crewmate default"
+  [ ! -e "$sub" ] || fail "routing refusal created a secondmate home"
+  [ ! -e "$home/data/secondmates.md" ] || fail "routing refusal created a secondmate registry"
+
+  printf 'on\n' > "$home/config/secondmate-routing"
+  FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" routing-default "$sub" alpha >/dev/null \
+    || fail "explicit routing opt-in did not permit the existing seed path"
+  pass "new secondmate routing defaults to direct crewmates and remains explicitly opt-in"
+}
+
+test_invalid_secondmate_routing_fails_before_mutation() {
+  local home sub err
+  home="$TMP_ROOT/routing-invalid-home"
+  sub="$TMP_ROOT/routing-invalid-subhome"
+  err="$TMP_ROOT/routing-invalid.err"
+  mkdir -p "$home/config" "$home/data" "$home/state"
+  sub="$TMP_ROOT/routing-invalid-subhome-outside"
+  printf 'maybe\n' > "$home/config/secondmate-routing"
+  if env -u FM_SECONDMATE_ROUTING FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" routing-invalid "$sub" --no-projects >/dev/null 2>"$err"; then
+    fail "invalid secondmate routing setting was accepted"
+  fi
+  grep -F 'config/secondmate-routing is invalid' "$err" >/dev/null \
+    || fail "invalid routing setting did not name its correction"
+  [ ! -e "$sub" ] || fail "invalid routing setting created a home"
+  [ ! -e "$home/data/secondmates.md" ] || fail "invalid routing setting created a registry"
+  pass "invalid secondmate routing settings fail before mutation"
+}
+
 file_mode() {
   if [ "$(uname)" = Darwin ]; then
     stat -f %Lp "$1"
@@ -2953,6 +2998,8 @@ EOF
   pass "fm-backlog-handoff refuses Done items under whitespace section headings and unsafe homes"
 }
 
+test_new_secondmate_routing_defaults_to_direct_crewmates
+test_invalid_secondmate_routing_fails_before_mutation
 test_fm_home_parameterization
 test_lock_status_is_per_home
 test_seed_allows_overlapping_clones_and_drops_owner

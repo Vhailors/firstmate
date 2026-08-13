@@ -130,6 +130,10 @@
 #   the file governs the spawn, its model/effort tokens are re-resolved on every
 #   respawn exactly like the harness axis, and explicit --model/--effort flags
 #   still win over the file's tokens.
+#   New secondmate launches require the home-local config/secondmate-routing
+#   opt-in (or FM_SECONDMATE_ROUTING=on); existing registered routes and their
+#   recovery remain available when the setting is off. The routing policy is
+#   parsed by bin/fm-secondmate-routing-lib.sh.
 #   A --secondmate spawn also propagates the primary's declared inherited local
 #   material, so the secondmate's OWN crewmates inherit primary config and the
 #   secondmate receives the primary's read-only shared captain-preference file
@@ -247,6 +251,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-secondmate-nudge-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
+# shellcheck source=bin/fm-secondmate-routing-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-routing-lib.sh"
 # shellcheck source=bin/fm-config-inherit-lib.sh
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-backend.sh
@@ -1011,6 +1017,15 @@ if [ "$RELAUNCH" -eq 0 ]; then
   SPAWN_TASK_SET_LOCK_HELD=1
 fi
 if [ "$KIND" = secondmate ]; then
+  secondmate_route_exists=0
+  if [ -f "$STATE/$ID.meta" ] && [ "$(fm_meta_get "$STATE/$ID.meta" kind)" = secondmate ]; then
+    secondmate_route_exists=1
+  elif [ -f "$DATA/secondmates.md" ] && secondmate_registry_line_for_id "$DATA/secondmates.md" "$ID"; then
+    secondmate_route_exists=1
+  fi
+  if [ "$secondmate_route_exists" -eq 0 ]; then
+    fm_secondmate_routing_require_enabled || exit 1
+  fi
   if spawn_remote_secondmate "$ID"; then
     exit 0
   else

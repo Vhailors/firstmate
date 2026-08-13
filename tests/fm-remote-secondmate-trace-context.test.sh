@@ -10,6 +10,7 @@
 # against a fake herdr CLI, so the carrier the remote pane receives is observable.
 # See docs/verification/trace-context.md for the maintained coverage inventory.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

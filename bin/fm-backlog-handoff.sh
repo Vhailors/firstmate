@@ -48,6 +48,8 @@
 # A present outbox is the whole recovery record. No two-phase journal exists.
 # Usage: fm-backlog-handoff.sh <secondmate-id> <item-key>...
 #        fm-backlog-handoff.sh --resume-pending
+# New handoffs require the home-local config/secondmate-routing opt-in; resuming
+# an already-created remote outbox remains available for recovery when it is off.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,6 +62,8 @@ MAIN_BACKLOG="$DATA/backlog.md"
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-secondmate-routing-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-routing-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 
@@ -94,9 +98,17 @@ else
   shift
 fi
 
+if [ "$RESUME_PENDING" -eq 0 ]; then
+  fm_secondmate_routing_require_enabled || exit 1
+fi
+
 secondmate_home() {
   local id=$1 home
   [ -f "$REG" ] || { echo "error: no secondmate registry at $REG" >&2; return 1; }
+  secondmate_registry_line_for_id "$REG" "$id" || {
+    echo "error: secondmate $id is not registered in $REG" >&2
+    return 1
+  }
   home=$(secondmate_registry_field "$REG" "$id" home || true)
   [ -n "$home" ] || { echo "error: secondmate $id has no home in $REG" >&2; return 1; }
   printf '%s\n' "$home"

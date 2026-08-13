@@ -181,6 +181,9 @@ The helper's header owns exact parsing, publication, and report output mechanics
 ## Secondmate routes (data/secondmates.md)
 
 Persistent secondmate routes live locally in `data/secondmates.md`.
+New secondmate routing is disabled by default so normal intake uses direct crewmates; set the home-local `config/secondmate-routing` file to exactly `on` to permit new local or remote secondmate seeds, new backlog handoffs, and unregistered secondmate spawns.
+Turning it off does not stop or retire existing secondmates and does not block their recovery, supervision, completion, or guarded retirement.
+The exact parser and refusal behavior are owned by `bin/fm-secondmate-routing-lib.sh` and its focused tests.
 The concise single-line route contract is owned by the [`secondmate-provisioning` skill](../.agents/skills/secondmate-provisioning/SKILL.md#routing-table), including the parser-compatible fields, one-sentence summary requirement, `home:` pointer to the seeded charter, and limit on extra registry prose.
 A remote route adds `host:`, `root:`, and the `herdr-session:` pin before the existing fields and places the whole secondmate home on that SSH host; it does not make ordinary workers remotely placeable.
 [`remote-secondmates.md`](remote-secondmates.md) owns current remote setup, operation, and safety behavior.

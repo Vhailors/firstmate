@@ -40,6 +40,11 @@ export FM_GATE_REFUSE_BYPASS=1
 # operator lifecycle tests opt back in explicitly with FM_OPERATOR_AUTOSTART=on.
 export FM_OPERATOR_AUTOSTART=off
 
+# Existing secondmate lifecycle suites exercise the legacy persistent route.
+# Production homes default new routing off; focused migration tests remove this
+# fixture override when they assert the direct-crewmate default.
+export FM_SECONDMATE_ROUTING=on
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

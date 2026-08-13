@@ -7,6 +7,11 @@
 # init/doctor), so they live here rather than in the generic tests/lib.sh. The
 # generic git/identity/meta primitives come from lib.sh, which this file pulls in.
 
+# Existing secondmate lifecycle fixtures exercise an explicitly opted-in route.
+# Production homes default new secondmate routing off; the migration contract is
+# covered by the focused refusal test in fm-secondmate-safety.test.sh.
+export FM_SECONDMATE_ROUTING=on
+
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

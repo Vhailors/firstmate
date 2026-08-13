@@ -23,6 +23,7 @@
 # operation goes through bin/fm-herdr-lab.sh, which appends the named session
 # flag and verifies the default fleet session is unchanged after teardown.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

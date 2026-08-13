@@ -208,7 +208,8 @@ cmd_launch() {
   if ! out=$(HERDR_SESSION="$desired_session" FM_BACKEND_HERDR_REQUIRE_RUNNING="$require_running" \
     FM_HOME="$FM_ROOT" FM_ROOT_OVERRIDE="$FM_ROOT" \
     FM_STATE_OVERRIDE="$CONTROL_STATE" FM_DATA_OVERRIDE="$CONTROL_DATA" \
-    FM_CONFIG_OVERRIDE="$TARGET_HOME/config" FM_SKIP_SECONDMATE_INHERIT=1 \
+    FM_CONFIG_OVERRIDE="$TARGET_HOME/config" FM_SECONDMATE_ROUTING=on \
+    FM_SKIP_SECONDMATE_INHERIT=1 \
     "$SCRIPT_DIR/fm-spawn.sh" "${ARGS[@]}" 2>&1); then
     [ -z "$out" ] || printf '%s\n' "$out" >&2
     die "remote host-local secondmate launch failed"

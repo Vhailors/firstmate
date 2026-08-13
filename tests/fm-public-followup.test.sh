@@ -11,6 +11,7 @@
 # server, and no public post. tasks-axi and jq are the real tools, because
 # tasks-axi owns the obligation state machine and stubbing it would test nothing.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 # shellcheck source=tests/lib.sh
 # shellcheck disable=SC1091

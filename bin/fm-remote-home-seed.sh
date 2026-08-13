@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Register and provision a whole secondmate home on an SSH-reachable host.
+# New routes require config/secondmate-routing=on in the primary home; an
+# already-registered route remains available for reseeding and recovery.
 #
 # Usage:
 #   fm-remote-home-seed.sh <id> <ssh-alias> <remote-root> <remote-home> [--herdr-session <visible-default|fm-remote>] {<project>[=<origin-url>]...|--no-projects}
@@ -43,6 +45,8 @@ MAX_MANIFEST_BYTES=1048576
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
 # shellcheck source=bin/fm-project-origin-lib.sh
 . "$SCRIPT_DIR/fm-project-origin-lib.sh"
+# shellcheck source=bin/fm-secondmate-routing-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-routing-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -125,11 +129,13 @@ REGISTRY_LOCK=$(secondmate_registry_lock_path "$STATE")
 fm_lock_acquire_wait "$REGISTRY_LOCK" || die "cannot lock the secondmate registry"
 REGISTRY_LOCK_HELD=1
 
+route_registered=0
 if [ -e "$REG" ] || [ -L "$REG" ]; then
   [ -f "$REG" ] && [ ! -L "$REG" ] || die "secondmate registry is unavailable or unsafe: $REG"
   secondmate_registry_validate_bindings "$REG" secondmate_registry_path_key \
     || die "$SECONDMATE_REGISTRY_ERROR"
   if secondmate_registry_line_for_id "$REG" "$ID"; then
+    route_registered=1
     [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ] \
       && [ "$SECONDMATE_REGISTRY_HOST" = "$HOST" ] \
       && [ "$SECONDMATE_REGISTRY_ROOT" = "$REMOTE_ROOT" ] \
@@ -142,6 +148,10 @@ if [ -e "$REG" ] || [ -L "$REG" ]; then
     [ "$REMOTE_HERDR_SESSION_SET" -eq 1 ] \
       || REMOTE_HERDR_SESSION=$SECONDMATE_REGISTRY_HERDR_SESSION
   fi
+fi
+
+if [ "$route_registered" -eq 0 ]; then
+  fm_secondmate_routing_require_enabled || exit 1
 fi
 
 if [ -z "$REMOTE_HERDR_SESSION" ]; then

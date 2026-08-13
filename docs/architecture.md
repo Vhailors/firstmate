@@ -191,7 +191,9 @@ That keeps spawn launch compatible across claude, codex, opencode, pi, pi-signed
 
 ## Optional secondmates
 
+Direct crewmates are the default operating model: each new task uses the primary's normal isolated worktree, supervision, and merge authority.
 `data/secondmates.md` records persistent secondmates with natural-language scopes, project clone lists, and home paths.
+New secondmate creation, backlog handoff, and unregistered secondmate launches require the home-local `config/secondmate-routing` opt-in; existing registered routes remain operable for their already-live work and guarded lifecycle.
 A local route points directly at its home, while a remote route adds an SSH alias, remote Firstmate code root, and Herdr session pin so the entire home and all of its child work stay on that host.
 Remote placement pins the remote second-mate agent to Herdr's operator-visible `default` or background `fm-remote` session while leaving the remote home's worker backend selection independent, and every non-doctor primary-to-remote `fm-on` command runs through the remote account's Firstmate-owned job worker rather than its SSH process or a Herdr pane.
 [`remote-secondmates.md`](remote-secondmates.md) owns current setup, supplied-origin provisioning, transport, relay, failure, and retirement behavior.

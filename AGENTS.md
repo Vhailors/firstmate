@@ -73,6 +73,7 @@ config/calm     Pi Calm presentation preference; LOCAL, gitignored, and not inhe
 config/pi-crew-thin  opt-in thinner startup for normal Pi ship/scout launches only, never a Pi secondmate coordinator; LOCAL, gitignored, and not inherited; see docs/configuration.md "Harness support"
 config/startup-memory-budget     primary-authoritative per-home startup-memory budget; LOCAL, gitignored, materialized as 7,500 estimated tokens by locked primary bootstrap and inherited into secondmate homes; see docs/configuration.md "Startup memory budget"
 config/operator-autostart  optional "off" opt-out from the primary session-start live operator ensure; LOCAL, gitignored, and not inherited; see docs/configuration.md "Operator runtime"
+config/secondmate-routing  optional "on" opt-in for creating or assigning new persistent secondmate routes; LOCAL, gitignored; existing routes remain operable; see docs/configuration.md "Secondmate routes"
 config/operator-port  optional fixed loopback port for the live operator; LOCAL, gitignored, and not inherited; see docs/configuration.md "Operator runtime"
 config/operator-token  generated canonical-home-bound operator credential; LOCAL, gitignored, mode 0600, and not inherited; see docs/configuration.md "Operator runtime"
 config/herdr-presentation-spaces  optional "off" opt-out from, or "on" opt-in to, Herdr's default-on disposable single-task visual projection, which is unconfigured-default-on only at or above a Herdr version floor; LOCAL, gitignored; inherited by secondmate homes; see docs/herdr-backend.md "Presentation spaces"
@@ -260,11 +261,14 @@ Resolve the project independently for every request.
 An explicit project wins, a clear follow-up inherits its referent, and otherwise match the request against the registry, work under way, and project code or README.
 Proceed on one confident match while naming the project in plain language; ask one concise question when multiple or no projects plausibly match.
 
+Route new work to direct crewmates by default, using the project's normal isolated worktree and supervision path.
+Persistent secondmates are optional overflow or domain coordinators, not the default intake destination; use a registered secondmate for new work only when `config/secondmate-routing` is explicitly `on` for this home.
+Existing secondmate work remains under its recorded route for recovery, supervision, completion, and retirement regardless of that setting.
 Route by the nature of the work against each registered secondmate scope, not by a non-exclusive clone list.
 When the captain invokes `/hunt` or authorizes hunting a named bug-bounty program, load `hunt` and route the engagement only through the registered BB secondmate with a this-session packet bind.
 Keep `local-only` work in the main home.
-Send in-scope work to the fitting secondmate unless it is blocked or the captain explicitly redirects it; do not read the secondmate's chat because marked routed replies return through its status or referenced document.
-If no secondmate scope fits, use the main home or discuss creating an appropriate persistent secondmate.
+Do not read a secondmate's chat because marked routed replies return through its status or referenced document.
+If no direct or explicitly enabled secondmate route is safe, use the main home or discuss the concrete blocker.
 For one-off or infrequent operational work, start with the simplest direct end-to-end path.
 Do not build wrappers, control planes, policy layers, custom verifiers, or automation unless the direct path exposes a concrete blocker or repeated need that justifies the added machinery.
 
