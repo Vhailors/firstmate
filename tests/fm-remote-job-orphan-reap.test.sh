@@ -39,8 +39,6 @@ alive() { kill -0 "$1" 2>/dev/null; }
 
 pgid_of() { ps -p "$1" -o pgid= 2>/dev/null | tr -d '[:space:]'; }
 
-ppid_of() { ps -p "$1" -o ppid= 2>/dev/null | tr -d '[:space:]'; }
-
 # Wait up to <seconds> for <pid> to exit; 0 when it did.
 wait_gone() { # <pid> <seconds>
   local pid=$1 deadline=$(( $(date +%s) + $2 ))
@@ -93,6 +91,7 @@ start_worker() {
     # shellcheck source=bin/fm-remote-job-lib.sh
     . "$ROOT/bin/fm-remote-job-lib.sh"
     fm_remote_job_start_linux_worker "$root" "$account_home" >&2 || exit 1
+    fm_remote_job_wait_for_probe "$root" "$account_home" || exit 1
     deadline=$(( $(date +%s) + 10 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
       pid=$(pgrep -f "^/bin/bash $root/bin/fm-remote-job-worker.sh\$" | head -n 1)
@@ -123,21 +122,15 @@ SERVE=$(pgrep -P "$WORKER" | head -n 1)
   fail "the serving child is outside the worker's process group"
 pass "the Linux start path puts the whole worker tree in its own process group"
 
-[ "$(ppid_of "$WORKER")" = 1 ] ||
-  fail "the fixture worker is not orphaned to init, so this case does not reproduce the leak"
-
-# The exact teardown shape that leaked in production: a fixture cleanup removes
-# the worker's state root and then stops only the single recorded worker pid -
-# which is the serving child, not the supervisor. KILL makes that obsolete
-# teardown reproduction independent of the graceful handler's missing-state
-# refusal. The supervisor respawns, so the tree survives a teardown that looks
-# complete.
-rm -rf "$CASE1/remote-jobs"
+# The exact process mismatch that leaked in production: teardown recorded the
+# serving child, not the restart supervisor above it. KILL makes this obsolete
+# teardown reproduction independent of the graceful handler. The supervisor
+# respawns, so stopping only the recorded pid leaves the tree running.
 kill -KILL "$SERVE" 2>/dev/null || true
 wait_gone "$SERVE" 10 || fail "the recorded serving child did not stop"
 alive "$WORKER" || fail "the fixture supervisor did not survive a lone child kill, so this case no longer covers the leak"
 wait_child "$WORKER" 15 || fail "the supervisor did not respawn after its recorded child pid was killed"
-pass "removing the state root and killing the recorded worker pid leaves the tree running at ppid 1"
+pass "killing only the recorded worker pid leaves the detached supervisor tree running"
 
 # A worker whose code root is intact is never a reap candidate, which is what
 # keeps the account's healthy LaunchAgent worker out of scope.

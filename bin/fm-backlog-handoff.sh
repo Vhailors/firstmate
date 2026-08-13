@@ -105,10 +105,6 @@ fi
 secondmate_home() {
   local id=$1 home
   [ -f "$REG" ] || { echo "error: no secondmate registry at $REG" >&2; return 1; }
-  secondmate_registry_line_for_id "$REG" "$id" || {
-    echo "error: secondmate $id is not registered in $REG" >&2
-    return 1
-  }
   home=$(secondmate_registry_field "$REG" "$id" home || true)
   [ -n "$home" ] || { echo "error: secondmate $id has no home in $REG" >&2; return 1; }
   printf '%s\n' "$home"
