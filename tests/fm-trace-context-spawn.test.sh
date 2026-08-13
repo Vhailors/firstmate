@@ -3,6 +3,7 @@
 # native W3C trace context using fake tmux panes and real isolated git worktrees.
 # See docs/verification/trace-context.md for the maintained coverage inventory.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

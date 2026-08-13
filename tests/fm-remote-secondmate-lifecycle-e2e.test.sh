@@ -368,6 +368,22 @@ if [ "${FM_TEST_PROVISION_ONLY:-0}" = 1 ]; then
 fi
 
 mkdir -p "$TMP_ROOT/seed-parent/data" "$TMP_ROOT/seed-parent/state"
+: > "$SSH_COUNT"
+if (
+  unset FM_SECONDMATE_ROUTING
+  FM_SECONDMATE_CHARTER='Default-off remote seed charter.' \
+    seed_env "$ROOT/bin/fm-remote-home-seed.sh" routing-off remote-mac "$REMOTE_ROOT" \
+    "$TMP_ROOT/routing-off-home" --herdr-session fm-remote --no-projects
+) > "$TMP_ROOT/routing-off.out" 2>&1; then
+  fail "new remote route succeeded while secondmate routing was off"
+fi
+assert_grep 'new secondmate routing is disabled' "$TMP_ROOT/routing-off.out" \
+  "default-off remote seed did not explain the direct-crewmate default"
+assert_absent "$TMP_ROOT/seed-parent/data/secondmates.md" "default-off remote seed created a registry"
+assert_absent "$TMP_ROOT/seed-parent/data/routing-off" "default-off remote seed created a charter"
+[ ! -s "$SSH_COUNT" ] || fail "default-off remote seed touched SSH"
+pass "new remote routes default to direct crewmates without touching SSH"
+
 FM_SECONDMATE_CHARTER='Failing seed charter.' FM_SECONDMATE_SCOPE='failed seed' \
   FM_FAKE_SSH_MODE=provision-block-fail seed_env "$ROOT/bin/fm-remote-home-seed.sh" \
   seed-fail remote-mac "$REMOTE_ROOT" "$TMP_ROOT/seed-fail-home" --herdr-session fm-remote --no-projects \
@@ -723,7 +739,10 @@ launches_after_inherit=0
 [ "$launches_before_inherit" -eq "$launches_after_inherit" ] \
   || fail "remote spawn reached launch after ambiguous partial inheritance"
 assert_absent "$PARENT/state/ios.meta" "failed remote inheritance published launch metadata"
-out=$(remote_env "$ROOT/bin/fm-spawn.sh" ios --secondmate)
+out=$(
+  unset FM_SECONDMATE_ROUTING
+  remote_env "$ROOT/bin/fm-spawn.sh" ios --secondmate
+)
 assert_contains "$out" 'remote=remote-mac backend=herdr' "remote spawn did not report separate host and backend dimensions"
 assert_grep 'remote_host=remote-mac' "$PARENT/state/ios.meta" "parent metadata omitted the remote host"
 assert_grep 'remote_backend=herdr' "$PARENT/state/ios.meta" "parent metadata omitted the remote-local backend"

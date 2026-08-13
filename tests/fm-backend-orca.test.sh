@@ -2,6 +2,7 @@
 # tests/fm-backend-orca.test.sh - fake-Orca-CLI unit tests for the Orca
 # terminal adapter primitives in bin/backends/orca.sh.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

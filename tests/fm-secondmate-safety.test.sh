@@ -35,9 +35,45 @@ test_new_secondmate_routing_defaults_to_direct_crewmates() {
   [ ! -e "$home/data/secondmates.md" ] || fail "routing refusal created a secondmate registry"
 
   printf 'on\n' > "$home/config/secondmate-routing"
-  FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" routing-default "$sub" alpha >/dev/null \
+  env -u FM_SECONDMATE_ROUTING FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" routing-default "$sub" alpha >/dev/null \
     || fail "explicit routing opt-in did not permit the existing seed path"
   pass "new secondmate routing defaults to direct crewmates and remains explicitly opt-in"
+}
+
+test_remote_seed_and_spawn_default_to_direct_crewmates() {
+  local home sub err out
+  home="$TMP_ROOT/routing-entrypoints-home"
+  sub="$TMP_ROOT/routing-entrypoints-subhome"
+  err="$TMP_ROOT/routing-entrypoints.err"
+  mkdir -p "$home/data" "$home/state" "$home/config"
+
+  if env -u FM_SECONDMATE_ROUTING FM_HOME="$home" FM_SECONDMATE_CHARTER='remote routing test' FM_SSH_BIN=/bin/false \
+    "$ROOT/bin/fm-remote-home-seed.sh" remote-default remote-mac /remote/root /remote/home \
+    --herdr-session fm-remote --no-projects >/dev/null 2>"$err"; then
+    fail "new remote secondmate seed succeeded without explicit routing opt-in"
+  fi
+  grep -F 'new secondmate routing is disabled' "$err" >/dev/null \
+    || fail "new remote seed refusal did not explain the direct-crewmate default"
+  [ ! -e "$home/data/secondmates.md" ] || fail "remote routing refusal created a registry"
+  [ ! -e "$home/data/remote-default" ] || fail "remote routing refusal created a charter"
+
+  if out=$(env -u FM_SECONDMATE_ROUTING FM_HOME="$home" FM_BACKEND=invalid \
+    "$ROOT/bin/fm-spawn.sh" spawn-default "$sub" codex --secondmate 2>&1); then
+    fail "new secondmate spawn succeeded without explicit routing opt-in"
+  fi
+  printf '%s\n' "$out" | grep -F 'new secondmate routing is disabled' >/dev/null \
+    || fail "new secondmate spawn refusal did not explain the direct-crewmate default"
+  [ ! -e "$home/state/spawn-default.meta" ] || fail "routing refusal published spawn metadata"
+  pass "remote seed and spawn default to direct crewmates"
+}
+
+test_remote_home_seed_usage_is_complete() {
+  local out rc=0
+  out=$("$ROOT/bin/fm-remote-home-seed.sh" 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || fail "remote home seed usage did not exit with status 2"
+  printf '%s\n' "$out" | grep -F 'same-route rerun converges.' >/dev/null \
+    || fail "remote home seed usage omitted the end of its public contract"
+  pass "remote home seed usage emits its complete public contract"
 }
 
 test_invalid_secondmate_routing_fails_before_mutation() {
@@ -55,6 +91,13 @@ test_invalid_secondmate_routing_fails_before_mutation() {
     || fail "invalid routing setting did not name its correction"
   [ ! -e "$sub" ] || fail "invalid routing setting created a home"
   [ ! -e "$home/data/secondmates.md" ] || fail "invalid routing setting created a registry"
+
+  printf 'on\noff\n' > "$home/config/secondmate-routing"
+  if env -u FM_SECONDMATE_ROUTING FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" routing-invalid "$sub" --no-projects >/dev/null 2>"$err"; then
+    fail "multi-line secondmate routing setting was accepted"
+  fi
+  grep -F 'config/secondmate-routing is invalid' "$err" >/dev/null \
+    || fail "multi-line routing setting did not fail closed"
   pass "invalid secondmate routing settings fail before mutation"
 }
 
@@ -2901,6 +2944,18 @@ test_backlog_handoff_aborts_safely() {
 - [x] old-task - shipped thing - local main (merged 2026-06-19)
 EOF
 
+  before=$(cat "$home/data/backlog.md")
+  if (
+    unset FM_SECONDMATE_ROUTING
+    FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" design bug-z
+  ) >"$TMP_ROOT/handoff-routing.out" 2>&1; then
+    fail "new backlog handoff succeeded without explicit routing opt-in"
+  fi
+  grep -F 'new secondmate routing is disabled' "$TMP_ROOT/handoff-routing.out" >/dev/null \
+    || fail "new backlog handoff refusal did not explain the direct-crewmate default"
+  [ "$before" = "$(cat "$home/data/backlog.md")" ] || fail "routing refusal mutated the main backlog"
+  [ ! -e "$subhome/data/backlog.md" ] || fail "routing refusal created a secondmate backlog"
+
   # A key matching neither backlog aborts atomically: nothing moves.
   before=$(cat "$home/data/backlog.md")
   if FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" design bug-z no-such-key >/dev/null 2>&1; then
@@ -2999,6 +3054,8 @@ EOF
 }
 
 test_new_secondmate_routing_defaults_to_direct_crewmates
+test_remote_seed_and_spawn_default_to_direct_crewmates
+test_remote_home_seed_usage_is_complete
 test_invalid_secondmate_routing_fails_before_mutation
 test_fm_home_parameterization
 test_lock_status_is_per_home

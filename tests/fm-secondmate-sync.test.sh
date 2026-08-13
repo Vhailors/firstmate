@@ -21,6 +21,7 @@
 #   - Spawning a secondmate fast-forwards its worktree to the primary's HEAD
 #     before launch, or warns and launches unchanged when the sync is skipped.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

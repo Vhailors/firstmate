@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Outbox-based remote secondmate backlog handoff and dropped-link recovery.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -224,14 +225,17 @@ assert_grep 'ios-b' "$REMOTE/data/backlog.md" "remote atomic receipt did not del
 [ "$(cat "$SSH_COUNT")" -eq 2 ] || fail "transport retried an ambiguously completed command"
 pass "ambiguous receipt leaves one durable outbox and no duplicate dispatchable source"
 
-out=$(handoff_env "$ROOT/bin/fm-backlog-handoff.sh" --resume-pending)
+out=$(
+  unset FM_SECONDMATE_ROUTING
+  handoff_env "$ROOT/bin/fm-backlog-handoff.sh" --resume-pending
+)
 assert_contains "$out" 'received: ios moved=0 already=2' "retry did not classify already-delivered keys idempotently"
 assert_absent "$PARENT/data/handoff/ios.outbox.md" "confirmed retry did not clean the local outbox"
 [ "$(grep -cF -- '- [ ] ios-a - first iOS task' "$REMOTE/data/backlog.md")" -eq 1 ] \
   || fail "receipt retry duplicated ios-a"
 [ "$(grep -cF -- '- [ ] ios-b - dependent iOS task' "$REMOTE/data/backlog.md")" -eq 1 ] \
   || fail "receipt retry duplicated ios-b"
-pass "re-delivery after unknown completion converges without duplication"
+pass "pending outbox recovery remains available while new routing is off"
 
 # A dropped transfer can leave a complete atomically published scratch file but
 # cannot apply half a backlog mutation. The next explicit recovery overwrites

@@ -42,6 +42,7 @@
 #      durable across every respawn while explicit per-spawn harness/model/effort
 #      flags still win.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

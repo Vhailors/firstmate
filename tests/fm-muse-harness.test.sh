@@ -9,6 +9,7 @@
 # anchored structural prefix instead of searching for "kind":"terminal", so a
 # fixture without it would let a naive implementation pass.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

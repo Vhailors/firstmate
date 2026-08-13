@@ -4,6 +4,7 @@
 # The narrow shared surface is exactly data/captain-shared.md.
 # data/captain.md and data/learnings.md remain domain-local in every home.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

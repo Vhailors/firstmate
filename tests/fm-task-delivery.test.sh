@@ -13,6 +13,7 @@
 # ahead of backend creation, and a fake `tmux` that exits non-zero backstops the
 # cases that are meant to get past them, so no window or worktree is ever created.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

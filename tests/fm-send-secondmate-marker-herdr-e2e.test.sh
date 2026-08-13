@@ -14,6 +14,7 @@
 # already-validated trailing --session pair, then delegates to the lab helper,
 # which appends its own required trailing --session before invoking real Herdr.
 set -u
+export FM_SECONDMATE_ROUTING=on
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

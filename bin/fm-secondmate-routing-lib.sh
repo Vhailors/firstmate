@@ -34,11 +34,9 @@ fm_secondmate_routing_state() {
     printf 'invalid\n'
     return 2
   }
-  IFS= read -r value < "$path" || {
-    printf 'invalid\n'
-    return 2
-  }
-  if IFS= read -r extra < "$path"; then
+  if ! {
+    IFS= read -r value && ! IFS= read -r extra
+  } < "$path"; then
     printf 'invalid\n'
     return 2
   fi
