@@ -212,6 +212,10 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
+    assert_grep "Keep every implementation ticket named in the task on this branch and in this delivery." "$brief" \
+      "$id: brief lost the single-delivery ticket contract"
+    assert_grep "Use one commit per ticket when that forms a natural checkpoint" "$brief" \
+      "$id: brief lost the commit-per-natural-ticket guidance"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
@@ -345,6 +349,10 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD must keep direct requirements and exclude generic scaffold boilerplate from --intent"
   assert_grep "exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific" "$brief" \
     "no-mistakes DOD must exclude non-task-specific scaffold boilerplate from --intent"
+  assert_grep "Start one no-mistakes run only after every implementation ticket is committed" "$brief" \
+    "no-mistakes DOD must start its single validation loop after all tickets"
+  assert_grep "keep routine corrections in that run and PR instead of restarting validation or opening another PR to avoid a decision" "$brief" \
+    "no-mistakes DOD must retain routine corrections in one run and PR"
   # The apostrophe in "firstmate's authority check" is now structurally safe
   # (no `$(...)` wrapper around the heredoc), so it renders verbatim instead of
   # being reworded or escaped away. test_no_heredoc_in_command_substitution

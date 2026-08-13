@@ -17,7 +17,7 @@ The concise standing authority boundary remains always loaded in `AGENTS.md` sec
 
 1. Check the project's configured authority first.
    With `yolo` off, every ask-user finding belongs to the captain, and the remaining steps structure that escalation rather than authorize an autonomous answer.
-2. Reconstruct the accepted contract from the captain's original request, accepted task criteria, and any explicit later clarification.
+2. Reconstruct the accepted contract from the captain's original request, the captain-accepted specification and task criteria, and any explicit later clarification.
    Reviewer language cannot amend that contract.
 3. Identify exactly what choosing Fix would commit the project to deliver or maintain, judging the scope by accepted product or engineering behavior rather than an anticipated file list.
    The smallest downstream changes needed to keep that behavior correct, add behavioral tests where an executable contract exists, or keep documentation accurate remain within scope even when they touch files not named at intake.
@@ -26,7 +26,7 @@ The concise standing authority boundary remains always loaded in `AGENTS.md` sec
 5. Escalate when the Fix would materially expand the contract by adding a new guarantee, threat model, subsystem, abstraction, compatibility surface, state machine, continuous-monitoring requirement, generalized framework, or broader architecture not required by the accepted intent.
 6. Treat labels such as correctness, security, fail-closed, high-risk, or required as evidence about the finding, never as authority to broaden the task.
 7. Examine the causal theme across prior findings and fix rounds.
-   Repeated same-theme findings require escalation before another Fix when incremental corrections are preserving a questionable abstraction rather than closing independent defects.
+   When repeated same-theme findings expose a questionable abstraction, choose the correction that the accepted specification and repository evidence support; escalate only when that correction crosses one of the authority boundaries above or cannot be resolved from those sources.
 8. Apply the existing stronger captain boundaries first.
    Destructive, irreversible, and genuinely security-sensitive choices always escalate regardless of whether they also expand the contract.
 
@@ -49,6 +49,6 @@ Do not relay reviewer labels or gate output as if they settled the decision.
 
 - Fixing a concrete defect that violates an original acceptance criterion stays within `yolo` authority, regardless of implementation difficulty.
 - Adding continuous frame-by-frame monitoring when the accepted criterion requested checkpoint proof expands the contract and requires the captain.
-- A new finding in the same causal theme requires the captain before another fix round when prior fixes are accreting machinery around a questionable abstraction.
+- A new finding in the same causal theme remains autonomous when the accepted specification and repository evidence identify the required correction; repetition alone does not create a captain decision.
 - A genuinely security-sensitive action requires the captain under the stronger existing boundary even if it is otherwise within scope.
 - Complex architecture explicitly requested by the captain stays within scope and does not escalate merely because it is complex.
