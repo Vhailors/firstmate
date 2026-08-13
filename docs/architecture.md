@@ -233,7 +233,7 @@ The `data/secondmates.md` line contract is owned by the [`secondmate-provisionin
 
 ## Delivery modes are explicit per task
 
-`AGENTS.md` section 7 owns the ordinary specification-led delivery chain, including its one-crewmate, one-PR shape, bounded post-acceptance authority, single no-mistakes run, and green auto-merge rule.
+`AGENTS.md` section 7 owns the ordinary specification-led delivery chain and its authority boundary.
 `no-mistakes` tasks run the full validation pipeline, `direct-PR` tasks open PRs without that pipeline, and `local-only` tasks stay local until firstmate performs an approved fast-forward merge.
 Each task's mode and `yolo` posture are firstmate's decision at intake and are passed explicitly to `bin/fm-brief.sh`, `bin/fm-spawn.sh`, and `bin/fm-promote.sh`, which refuse a ship task that does not carry them.
 A ship brief records its mode as a fixed machine-readable line and the spawn refuses to launch on a different one, so the worker's instructions and the recorded task delivery cannot diverge.
