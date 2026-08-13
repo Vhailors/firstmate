@@ -12,13 +12,25 @@
 # fails closed. This library owns parsing and the new-route refusal message;
 # callers own which lifecycle operation counts as new.
 
-fm_secondmate_routing_config_path() {
+fm_secondmate_routing_config_dir() {
   local home=${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}
-  printf '%s/secondmate-routing\n' "${FM_CONFIG_OVERRIDE:-$home/config}"
+  printf '%s/config\n' "$home"
+}
+
+fm_secondmate_routing_config_path() {
+  printf '%s/secondmate-routing\n' "$(fm_secondmate_routing_config_dir)"
+}
+
+fm_secondmate_routing_link_count() {
+  if [ "$(uname)" = Darwin ]; then
+    stat -f %l "$1" 2>/dev/null
+  else
+    stat -c %h "$1" 2>/dev/null
+  fi
 }
 
 fm_secondmate_routing_state() {
-  local path=${FM_SECONDMATE_ROUTING_CONFIG:-$(fm_secondmate_routing_config_path)} value extra
+  local config_dir path value extra links
   if [ -n "${FM_SECONDMATE_ROUTING+x}" ]; then
     value=$FM_SECONDMATE_ROUTING
     case "$value" in
@@ -26,6 +38,16 @@ fm_secondmate_routing_state() {
       *) printf 'invalid\n'; return 2 ;;
     esac
   fi
+  config_dir=$(fm_secondmate_routing_config_dir)
+  path=$(fm_secondmate_routing_config_path)
+  if [ ! -e "$config_dir" ] && [ ! -L "$config_dir" ]; then
+    printf 'off\n'
+    return 0
+  fi
+  [ -d "$config_dir" ] && [ ! -L "$config_dir" ] || {
+    printf 'invalid\n'
+    return 2
+  }
   if [ ! -e "$path" ] && [ ! -L "$path" ]; then
     printf 'off\n'
     return 0
@@ -34,12 +56,25 @@ fm_secondmate_routing_state() {
     printf 'invalid\n'
     return 2
   }
-  if ! {
-    IFS= read -r value && ! IFS= read -r extra
-  } < "$path"; then
+  links=$(fm_secondmate_routing_link_count "$path") || {
     printf 'invalid\n'
     return 2
-  fi
+  }
+  [ "$links" = 1 ] || {
+    printf 'invalid\n'
+    return 2
+  }
+  {
+    if ! IFS= read -r value; then
+      printf 'invalid\n'
+      return 2
+    fi
+    extra=
+    if IFS= read -r extra || [ -n "$extra" ]; then
+      printf 'invalid\n'
+      return 2
+    fi
+  } < "$path"
   case "$value" in
     on|off) printf '%s\n' "$value"; return 0 ;;
     *) printf 'invalid\n'; return 2 ;;

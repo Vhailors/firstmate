@@ -77,7 +77,7 @@ test_remote_home_seed_usage_is_complete() {
 }
 
 test_invalid_secondmate_routing_fails_before_mutation() {
-  local home sub err
+  local home sub err alternate outside link_alias
   home="$TMP_ROOT/routing-invalid-home"
   sub="$TMP_ROOT/routing-invalid-subhome"
   err="$TMP_ROOT/routing-invalid.err"
@@ -98,6 +98,55 @@ test_invalid_secondmate_routing_fails_before_mutation() {
   fi
   grep -F 'config/secondmate-routing is invalid' "$err" >/dev/null \
     || fail "multi-line routing setting did not fail closed"
+
+  printf 'on\noff' > "$home/config/secondmate-routing"
+  if env -u FM_SECONDMATE_ROUTING FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" routing-invalid "$sub" --no-projects >/dev/null 2>"$err"; then
+    fail "unterminated extra routing line was accepted"
+  fi
+  grep -F 'config/secondmate-routing is invalid' "$err" >/dev/null \
+    || fail "unterminated extra routing line did not fail closed"
+
+  rm -f "$home/config/secondmate-routing"
+  alternate="$TMP_ROOT/routing-alternate-config"
+  mkdir -p "$alternate"
+  printf 'on\n' > "$alternate/secondmate-routing"
+  if env -u FM_SECONDMATE_ROUTING FM_HOME="$home" FM_CONFIG_OVERRIDE="$alternate" \
+    FM_SECONDMATE_ROUTING_CONFIG="$alternate/secondmate-routing" \
+    "$ROOT/bin/fm-home-seed.sh" routing-invalid "$sub" --no-projects >/dev/null 2>"$err"; then
+    fail "non-home-local routing configuration enabled a secondmate seed"
+  fi
+  grep -F 'new secondmate routing is disabled' "$err" >/dev/null \
+    || fail "non-home-local routing configuration was not ignored"
+
+  outside="$TMP_ROOT/routing-outside-config"
+  mkdir -p "$outside"
+  printf 'on\n' > "$outside/secondmate-routing"
+  rm -rf "$home/config"
+  ln -s "$outside" "$home/config"
+  if env -u FM_SECONDMATE_ROUTING FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" routing-invalid "$sub" --no-projects >/dev/null 2>"$err"; then
+    fail "symlinked routing config directory was accepted"
+  fi
+  grep -F 'config/secondmate-routing is invalid' "$err" >/dev/null \
+    || fail "symlinked routing config directory did not fail closed"
+
+  rm -f "$home/config"
+  mkdir -p "$home/config"
+  ln -s "$outside/secondmate-routing" "$home/config/secondmate-routing"
+  if env -u FM_SECONDMATE_ROUTING FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" routing-invalid "$sub" --no-projects >/dev/null 2>"$err"; then
+    fail "symlinked routing config file was accepted"
+  fi
+  grep -F 'config/secondmate-routing is invalid' "$err" >/dev/null \
+    || fail "symlinked routing config file did not fail closed"
+
+  rm -f "$home/config/secondmate-routing"
+  printf 'on\n' > "$home/config/secondmate-routing"
+  link_alias="$home/config/secondmate-routing.alias"
+  ln "$home/config/secondmate-routing" "$link_alias"
+  if env -u FM_SECONDMATE_ROUTING FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" routing-invalid "$sub" --no-projects >/dev/null 2>"$err"; then
+    fail "hardlinked routing config file was accepted"
+  fi
+  grep -F 'config/secondmate-routing is invalid' "$err" >/dev/null \
+    || fail "hardlinked routing config file did not fail closed"
   pass "invalid secondmate routing settings fail before mutation"
 }
 
