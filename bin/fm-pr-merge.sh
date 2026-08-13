@@ -150,46 +150,59 @@ metadata_exact_value() {
   printf '%s\n' "$value"
 }
 
-if [ "$AUTONOMOUS" -eq 1 ]; then
-  MODE=$(metadata_exact_value mode) || {
+autonomous_posture_check() {
+  local mode yolo
+  mode=$(metadata_exact_value mode) || {
     echo "error: autonomous merge requires exactly one readable mode=no-mistakes record" >&2
-    exit 1
+    return 1
   }
-  YOLO=$(metadata_exact_value yolo) || {
+  yolo=$(metadata_exact_value yolo) || {
     echo "error: autonomous merge requires exactly one readable yolo=on record" >&2
-    exit 1
+    return 1
   }
-  [ "$MODE" = no-mistakes ] || {
-    echo "REFUSED: autonomous merge requires mode=no-mistakes; task $ID records mode=$MODE" >&2
-    exit 1
+  [ "$mode" = no-mistakes ] || {
+    echo "REFUSED: autonomous merge requires mode=no-mistakes; task $ID records mode=$mode" >&2
+    return 1
   }
-  [ "$YOLO" = on ] || {
-    echo "REFUSED: autonomous merge requires yolo=on; task $ID records yolo=$YOLO" >&2
-    exit 1
+  [ "$yolo" = on ] || {
+    echo "REFUSED: autonomous merge requires yolo=on; task $ID records yolo=$yolo" >&2
+    return 1
   }
+}
+
+autonomous_green_identity_read() {
+  AUTONOMOUS_CREW_STATE=$("$SCRIPT_DIR/fm-crew-state.sh" "$ID" --identity) || {
+    echo "error: autonomous merge could not determine current validation state for task $ID" >&2
+    return 1
+  }
+  case "$AUTONOMOUS_CREW_STATE" in
+    "state: done · source: run-step · checks green: PR ready for review"*) ;;
+    *)
+      echo "REFUSED: autonomous merge requires a current-code-matched green no-mistakes run for task $ID" >&2
+      echo "current state: $AUTONOMOUS_CREW_STATE" >&2
+      return 1
+      ;;
+  esac
+  AUTONOMOUS_RUN_ID=$(printf '%s\n' "$AUTONOMOUS_CREW_STATE" | sed -n 's/.* · run_id: \([^ ·]*\) · run_head:.*/\1/p')
+  AUTONOMOUS_RUN_HEAD=$(printf '%s\n' "$AUTONOMOUS_CREW_STATE" | sed -n 's/.* · run_head: \([^ ·]*\) · run_pr:.*/\1/p')
+  AUTONOMOUS_RUN_PR=${AUTONOMOUS_CREW_STATE##* · run_pr: }
+  [ -n "$AUTONOMOUS_RUN_ID" ] && [ -n "$AUTONOMOUS_RUN_HEAD" ] \
+    && [ -n "$AUTONOMOUS_RUN_PR" ] || {
+      echo "REFUSED: autonomous merge requires the green run's complete PR identity" >&2
+      return 1
+    }
+}
+
+if [ "$AUTONOMOUS" -eq 1 ]; then
+  autonomous_posture_check || exit 1
   WT=$(metadata_exact_value worktree) || {
     echo "error: autonomous merge requires exactly one readable worktree record" >&2
     exit 1
   }
-  CREW_STATE=$("$SCRIPT_DIR/fm-crew-state.sh" "$ID" --identity) || {
-    echo "error: autonomous merge could not determine current validation state for task $ID" >&2
-    exit 1
-  }
-  case "$CREW_STATE" in
-    "state: done · source: run-step · checks green: PR ready for review"*) ;;
-    *)
-      echo "REFUSED: autonomous merge requires a current-code-matched green no-mistakes run for task $ID" >&2
-      echo "current state: $CREW_STATE" >&2
-      exit 1
-      ;;
-  esac
-  RUN_ID=$(printf '%s\n' "$CREW_STATE" | sed -n 's/.* · run_id: \([^ ·]*\) · run_head:.*/\1/p')
-  RUN_HEAD=$(printf '%s\n' "$CREW_STATE" | sed -n 's/.* · run_head: \([^ ·]*\) · run_pr:.*/\1/p')
-  RUN_PR=${CREW_STATE##* · run_pr: }
-  [ -n "$RUN_ID" ] && [ -n "$RUN_HEAD" ] && [ -n "$RUN_PR" ] || {
-    echo "REFUSED: autonomous merge requires the green run's complete PR identity" >&2
-    exit 1
-  }
+  autonomous_green_identity_read || exit 1
+  RUN_ID=$AUTONOMOUS_RUN_ID
+  RUN_HEAD=$AUTONOMOUS_RUN_HEAD
+  RUN_PR=$AUTONOMOUS_RUN_PR
   [ "$RUN_PR" = "$URL" ] || {
     echo "REFUSED: autonomous merge request does not match the green run's PR" >&2
     exit 1
@@ -231,20 +244,12 @@ if [ "$AUTONOMOUS" -eq 1 ]; then
     exit 1
   fi
   fm_merge_authority_check "$META" "$ID" || exit 1
-  MODE=$(metadata_exact_value mode) || {
-    echo "error: autonomous merge requires exactly one readable mode=no-mistakes record" >&2
-    exit 1
-  }
-  YOLO=$(metadata_exact_value yolo) || {
-    echo "error: autonomous merge requires exactly one readable yolo=on record" >&2
-    exit 1
-  }
-  [ "$MODE" = no-mistakes ] || {
-    echo "REFUSED: autonomous merge requires mode=no-mistakes; task $ID records mode=$MODE" >&2
-    exit 1
-  }
-  [ "$YOLO" = on ] || {
-    echo "REFUSED: autonomous merge requires yolo=on; task $ID records yolo=$YOLO" >&2
+  autonomous_posture_check || exit 1
+  autonomous_green_identity_read || exit 1
+  [ "$AUTONOMOUS_RUN_ID" = "$RUN_ID" ] \
+    && [ "$AUTONOMOUS_RUN_HEAD" = "$RUN_HEAD" ] \
+    && [ "$AUTONOMOUS_RUN_PR" = "$RUN_PR" ] || {
+    echo "REFUSED: autonomous merge validation run identity changed after preflight" >&2
     exit 1
   }
   RECORDED_PR=$(metadata_exact_value pr) || {

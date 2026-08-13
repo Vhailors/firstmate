@@ -135,7 +135,13 @@ add_no_mistakes_mock() {
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
   "axi status") printf '%s\n' "${FM_TEST_NM_STATUS:-}" ;;
-  "axi logs") printf '%s\n' "${FM_TEST_NM_CI_LOG:-}" ;;
+  "axi logs")
+    if [ -n "${FM_TEST_NM_CI_LOG_FILE:-}" ]; then
+      cat "$FM_TEST_NM_CI_LOG_FILE"
+    else
+      printf '%s\n' "${FM_TEST_NM_CI_LOG:-}"
+    fi
+    ;;
   "runs --limit") printf '%s\n' "${FM_TEST_NM_RUNS:-}" ;;
 esac
 SH
@@ -510,6 +516,44 @@ SH
   pass "autonomous merge rechecks authority after preflight"
 }
 
+test_autonomous_merge_rechecks_green_state_after_preflight() {
+  local case_dir rc head hook ci_log_file
+  case_dir=$(make_case autonomous-ci-change-after-preflight)
+  make_validation_worktree "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  printf 'yolo=on\n' >> "$case_dir/state/task-x1.meta"
+  add_autonomous_gh_mocks "$case_dir" "$head" "$head"
+  add_no_mistakes_mock "$case_dir"
+  : > "$case_dir/gh-axi.log"
+  ci_log_file="$case_dir/ci.log"
+  printf '%s\n' 'all CI checks passed - still monitoring until merged or closed' > "$ci_log_file"
+  hook="$case_dir/invalidate-ci-after-preflight"
+  cat > "$hook" <<SH
+#!/usr/bin/env bash
+printf '%s\n' 'CI checks running' > '$ci_log_file'
+SH
+  chmod +x "$hook"
+
+  set +e
+  FM_TEST_NM_STATUS=$(green_status "$case_dir") \
+  FM_TEST_NM_CI_LOG_FILE="$ci_log_file" \
+  FM_TEST_GH_VIEW_HOOK="$hook" \
+    run_pr_merge "$case_dir" --autonomous task-x1 https://github.com/example/repo/pull/31 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "autonomous-ci-change-after-preflight: stale green verdict should refuse"
+  grep -qxF 'CI checks running' "$ci_log_file" \
+    || fail "autonomous-ci-change-after-preflight: CI state did not change"
+  grep -qxF "api GET /repos/example/repo/pulls/31 --jq {url:.html_url,head:.head.sha}" \
+    "$case_dir/gh-axi.log" \
+    || fail "autonomous-ci-change-after-preflight: CI did not change after forge preflight"
+  assert_no_grep 'api PUT\|pr merge' "$case_dir/gh-axi.log" \
+    "autonomous-ci-change-after-preflight: stale green verdict reached a forge merge"
+  pass "autonomous merge rechecks green state after preflight"
+}
+
 test_autonomous_merge_refuses_wrong_authority_or_validation() {
   local label case_dir rc status ci_log
   for label in blocked yolo-off wrong-mode red-current stale-run; do
@@ -571,4 +615,5 @@ test_autonomous_merge_accepts_only_current_green_lane
 test_autonomous_merge_refuses_unrelated_or_mismatched_identity
 test_autonomous_merge_refuses_post_validation_head_advance
 test_autonomous_merge_rechecks_block_after_preflight
+test_autonomous_merge_rechecks_green_state_after_preflight
 test_autonomous_merge_refuses_wrong_authority_or_validation
