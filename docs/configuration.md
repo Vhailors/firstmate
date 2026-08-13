@@ -53,7 +53,7 @@ This preference is local to each Firstmate home and is not part of secondmate in
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.
 When the default backend is selected and compatible `tasks-axi` is on `PATH`, firstmate uses its verbs for routine backlog mutations.
-Secondmate handoffs are separate and unconditional: `fm-backlog-handoff.sh` keeps only its own fleet-level validation and always delegates the item move to `tasks-axi mv`, the single owner of the backlog format.
+After the secondmate-routing opt-in permits a new handoff, `fm-backlog-handoff.sh` remains independent of the selected backlog backend and always delegates the item move to `tasks-axi mv`, the single owner of the backlog format.
 It moves in-scope `## Queued` items only and refuses `## In flight` and historical `## Done` records, which stay with their home for pruning or archiving.
 Handoff item bodies must use at least two leading spaces, and the helper refuses a selected item with a single-space or tab-indented continuation rather than risk orphaning it.
 Because bootstrap requires `tasks-axi` on `PATH` on every profile, that delegation works fleet-wide, and the `config/backlog-backend=manual` knob governs firstmate's own hand-editing of its backlog, not this validated helper.
@@ -181,7 +181,7 @@ The helper's header owns exact parsing, publication, and report output mechanics
 ## Secondmate routes (data/secondmates.md)
 
 Persistent secondmate routes live locally in `data/secondmates.md`.
-New secondmate routing is disabled by default so normal intake uses direct crewmates; set the home-local `config/secondmate-routing` file to exactly `on` to permit new local or remote secondmate seeds, new backlog handoffs, and unregistered secondmate spawns.
+New secondmate routing is disabled by default so normal intake uses direct crewmates; set the home-local `config/secondmate-routing` file to exactly `on` to permit new local or remote secondmate routes, new backlog handoffs, and unregistered secondmate spawns.
 Turning it off does not stop or retire existing secondmates and does not block their recovery, supervision, completion, or guarded retirement.
 The exact parser and refusal behavior are owned by `bin/fm-secondmate-routing-lib.sh` and its focused tests.
 The concise single-line route contract is owned by the [`secondmate-provisioning` skill](../.agents/skills/secondmate-provisioning/SKILL.md#routing-table), including the parser-compatible fields, one-sentence summary requirement, `home:` pointer to the seeded charter, and limit on extra registry prose.

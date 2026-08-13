@@ -13,8 +13,8 @@ metadata:
 
 Use this reference before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a persistent secondmate, and before editing `data/secondmates.md`.
 
-Keep the always-inline routing rules in `AGENTS.md` authoritative: direct crewmates are the default for new work, and new persistent secondmate routes require the home-local `config/secondmate-routing` opt-in set to `on`.
-Existing registered secondmate routes remain available for recovery, supervision, completion, and retirement when the opt-in is off.
+Keep the always-inline routing rules in `AGENTS.md` authoritative: direct crewmates are the default for new work, and creating a persistent secondmate route or assigning new backlog work to one requires the home-local `config/secondmate-routing` opt-in set to `on`.
+Existing registered secondmate work remains available for recovery, supervision, completion, and retirement when the opt-in is off.
 Route by natural-language `scope:`, local-only projects stay with the main firstmate, and secondmates are idle by default.
 
 ## Routing table
@@ -194,7 +194,7 @@ Read `data/backlog.md`, pick queued items that fit the new scope, and move them 
 bin/fm-backlog-handoff.sh <secondmate-id> <item-key>...
 ```
 
-After seeding, run this handoff for the new secondmate's in-scope queued items.
+After seeding, run this handoff for the new secondmate's in-scope queued items while new secondmate routing remains explicitly enabled.
 For an existing or inherited domain, complete record intake first so no already-shipped plan row is handed off as open work.
 For a local route, the helper resolves and validates the secondmate home from `data/secondmates.md`, then delegates the item move to `tasks-axi mv` (the single owner of the backlog format), which moves each named item - and a whole connected set, blocker plus dependents, atomically - from the main `data/backlog.md` into the secondmate home's `data/backlog.md`.
 For a remote route, the same helper first moves the dependency-closed set atomically from the main backlog into `data/handoff/<id>.outbox.md`, then transfers that backlog-format outbox through `fm-on.sh` and lets the remote home's `fm-backlog-receive.sh` move every not-already-present key under the destination lock.

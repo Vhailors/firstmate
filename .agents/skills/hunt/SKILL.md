@@ -21,8 +21,8 @@ The BB secondmate exclusively owns packet verification, staffing, lane execution
 1. Confirm the captain authorized this engagement in the current session.
 2. Resolve one exact program URL or handle from the captain's message or from a catalog/API selection the captain explicitly asked Firstmate to make.
 3. Ask one concise program-identity question if the target remains ambiguous.
-4. Confirm the registered BB secondmate route is available, using `secondmate-provisioning` for recovery when needed.
-5. Stop if authorization, target identity, BB ownership, or the route cannot be established.
+4. Confirm the primary home's new-secondmate routing opt-in is enabled, then confirm the registered BB secondmate route is available, using `secondmate-provisioning` for recovery when needed.
+5. Stop if authorization, target identity, BB ownership, routing opt-in, or the route cannot be established.
 
 A historical packet or public policy snapshot is context, never current-session authorization.
 Firstmate never invents scope and never runs hunt tools itself.
@@ -75,7 +75,7 @@ The request must include every item below.
 ## Firstmate procedure
 
 1. Resolve the authorized program identity.
-2. Recover the BB secondmate route only through the normal secondmate procedure when necessary.
+2. After confirming new secondmate routing is enabled, recover the BB secondmate route only through the normal secondmate procedure when necessary.
 3. Send one complete marked request containing the required route contract and any captain-supplied lane, authentication, exploit-stage, OOB, or severity constraints.
 4. Route marked replies through the normal secondmate pending-reply contract.
 5. Ask the captain one focused question when BB returns a genuine authorization, scope, credential, or external-action decision.
@@ -94,6 +94,7 @@ The request must include every item below.
 
 - No current-session authorization.
 - No exact program identity.
+- New secondmate routing is disabled.
 - No verified live scope packet.
 - Any requested action outside live program rules.
 - Any request for automatic submission or vendor contact without separate captain approval.

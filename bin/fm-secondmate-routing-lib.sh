@@ -7,10 +7,11 @@
 # default. Existing secondmate routes remain available for recovery, supervision,
 # completion, and retirement while the switch is off.
 #
-# FM_SECONDMATE_ROUTING is a one-invocation override for tests and an explicitly
-# selected operator action. It has the same `on`/`off` value set and otherwise
-# fails closed. This library owns parsing and the new-route refusal message;
-# callers own which lifecycle operation counts as new.
+# FM_SECONDMATE_ROUTING is an internal one-invocation override for tests and for
+# continuing a parent-authorized route across the bounded remote-control boundary.
+# It is not an operator configuration surface. It has the same `on`/`off` value
+# set and otherwise fails closed. This library owns parsing and the new-route
+# refusal message; callers own which lifecycle operation counts as new.
 
 fm_secondmate_routing_config_dir() {
   local home=${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}

@@ -33,7 +33,7 @@ firstmate flips the model.
 You talk to a single agent - the first mate - and it runs the crew for you: spawning autonomous agents in a visible session backend, giving each a clean git worktree, supervising them to completion, and handing you finished PRs, approved local merges, or standalone investigation reports.
 Direct crewmates are the default: new work stays under the primary firstmate's ordinary isolated-worktree and supervision path.
 For larger fleets, you can explicitly opt in to persistent secondmates: second mates that are still ordinary direct reports, but run from their own isolated firstmate homes on this machine or another SSH-reachable host.
-Set `config/secondmate-routing` to `on` in the relevant home before creating a new secondmate route; existing routes remain recoverable and manageable.
+Set `config/secondmate-routing` to `on` in the relevant home before creating a persistent secondmate route or assigning new work to one; existing work and guarded lifecycle remain recoverable and manageable.
 
 firstmate is not a model, not a harness, not a skill, not an MCP server, and not a CLI.
 firstmate is an agent distro for running a crew of agents.

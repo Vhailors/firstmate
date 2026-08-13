@@ -262,6 +262,8 @@ Move already-judged queued work with the normal command:
 bin/fm-backlog-handoff.sh <id> <item-key>...
 ```
 
+This assigns new work and therefore requires the primary home's `config/secondmate-routing` opt-in; `--resume-pending` remains available with the opt-in off because it only recovers an outbox created earlier.
+
 For a remote route, `tasks-axi mv` first moves the dependency-closed set atomically from the primary backlog into `data/handoff/<id>.outbox.md`.
 The outbox is then copied to the remote handoff scratch directory and `fm-backlog-receive.sh` atomically ingests every destination-absent key under the remote backlog's own lock.
 Confirmed receipt removes the outbox.
