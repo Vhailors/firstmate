@@ -31,6 +31,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-merge-authority-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
 
 AUTONOMOUS=0
 if [ "${1:-}" = --autonomous ]; then
@@ -123,6 +125,17 @@ if [ ! -f "$META" ] || [ -L "$META" ]; then
   exit 1
 fi
 
+META_LOCK=
+META_LOCK_HELD=0
+merge_cleanup() {
+  if [ "$META_LOCK_HELD" -eq 1 ]; then
+    META_LOCK_HELD=0
+    fm_lock_release "$META_LOCK" || true
+  fi
+}
+trap merge_cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
 # Checked before fm-pr-check.sh so a blocked task records no pr=, arms no merge
 # poll, and reaches no forge call: the refusal must leave no trace of an attempt
 # to land work the captain forbade.
@@ -207,12 +220,41 @@ if [ "$AUTONOMOUS" -eq 1 ]; then
 fi
 
 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
-grep -qxF "pr=$URL" "$META" || {
-  echo "error: PR metadata recording failed" >&2
-  exit 1
-}
 
 if [ "$AUTONOMOUS" -eq 1 ]; then
+  META_LOCK=$(fm_meta_lock_path "$META") || exit 1
+  fm_lock_acquire_wait "$META_LOCK"
+  META_LOCK_HELD=1
+  if [ ! -f "$META" ] || [ -L "$META" ] \
+    || [ "$(fm_pr_file_link_count "$META")" -ne 1 ]; then
+    echo "error: task metadata is unavailable" >&2
+    exit 1
+  fi
+  fm_merge_authority_check "$META" "$ID" || exit 1
+  MODE=$(metadata_exact_value mode) || {
+    echo "error: autonomous merge requires exactly one readable mode=no-mistakes record" >&2
+    exit 1
+  }
+  YOLO=$(metadata_exact_value yolo) || {
+    echo "error: autonomous merge requires exactly one readable yolo=on record" >&2
+    exit 1
+  }
+  [ "$MODE" = no-mistakes ] || {
+    echo "REFUSED: autonomous merge requires mode=no-mistakes; task $ID records mode=$MODE" >&2
+    exit 1
+  }
+  [ "$YOLO" = on ] || {
+    echo "REFUSED: autonomous merge requires yolo=on; task $ID records yolo=$YOLO" >&2
+    exit 1
+  }
+  RECORDED_PR=$(metadata_exact_value pr) || {
+    echo "error: PR metadata recording failed" >&2
+    exit 1
+  }
+  [ "$RECORDED_PR" = "$URL" ] || {
+    echo "REFUSED: autonomous merge recorded PR does not match the green run" >&2
+    exit 1
+  }
   RECORDED_HEAD=$(metadata_exact_value pr_head) || {
     echo "REFUSED: autonomous merge requires an exact recorded PR head" >&2
     exit 1
@@ -221,9 +263,15 @@ if [ "$AUTONOMOUS" -eq 1 ]; then
     echo "REFUSED: autonomous merge recorded PR head does not match the green run" >&2
     exit 1
   }
-  exec gh-axi api PUT "/repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER/merge" \
+  gh-axi api PUT "/repos/$PR_OWNER/$PR_REPO/pulls/$PR_NUMBER/merge" \
     --field "sha=$RUN_HEAD_FULL" --field "merge_method=$AUTONOMOUS_METHOD"
+  exit 0
 fi
+
+grep -qxF "pr=$URL" "$META" || {
+  echo "error: PR metadata recording failed" >&2
+  exit 1
+}
 
 merge_args=()
 if ! caller_has_merge_method "$@"; then

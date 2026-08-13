@@ -116,7 +116,13 @@ SH
   cat > "$case_dir/fakebin/gh" <<SH
 #!/usr/bin/env bash
 case "\${1:-} \${2:-}" in
-  "pr view") printf '%s\n' '$recorded_head'; exit 0 ;;
+  "pr view")
+    if [ -n "\${FM_TEST_GH_VIEW_HOOK:-}" ]; then
+      "\$FM_TEST_GH_VIEW_HOOK"
+    fi
+    printf '%s\n' '$recorded_head'
+    exit 0
+    ;;
 esac
 exit 1
 SH
@@ -461,6 +467,49 @@ test_autonomous_merge_refuses_post_validation_head_advance() {
   pass "autonomous merge fails when the PR head advances after validation"
 }
 
+test_autonomous_merge_rechecks_block_after_preflight() {
+  local case_dir rc head hook
+  case_dir=$(make_case autonomous-block-after-preflight)
+  make_validation_worktree "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  printf 'yolo=on\n' >> "$case_dir/state/task-x1.meta"
+  add_autonomous_gh_mocks "$case_dir" "$head" "$head"
+  add_no_mistakes_mock "$case_dir"
+  : > "$case_dir/gh-axi.log"
+  hook="$case_dir/block-after-preflight"
+  cat > "$hook" <<SH
+#!/usr/bin/env bash
+set -eu
+. "$ROOT/bin/fm-wake-lib.sh"
+meta='$case_dir/state/task-x1.meta'
+lock=\$(fm_meta_lock_path "\$meta")
+fm_lock_acquire_wait "\$lock"
+tmp=\$(mktemp '$case_dir/state/.task-x1.meta.XXXXXX')
+awk '!/^merge=/' "\$meta" > "\$tmp"
+printf 'merge=blocked\n' >> "\$tmp"
+chmod 600 "\$tmp"
+mv -f "\$tmp" "\$meta"
+fm_lock_release "\$lock"
+SH
+  chmod +x "$hook"
+
+  set +e
+  FM_TEST_NM_STATUS=$(green_status "$case_dir") \
+  FM_TEST_NM_CI_LOG='all CI checks passed - still monitoring until merged or closed' \
+  FM_TEST_GH_VIEW_HOOK="$hook" \
+    run_pr_merge "$case_dir" --autonomous task-x1 https://github.com/example/repo/pull/31 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "autonomous-block-after-preflight: newly blocked lane should refuse"
+  grep -qxF 'merge=blocked' "$case_dir/state/task-x1.meta" \
+    || fail "autonomous-block-after-preflight: concurrent block was not preserved"
+  assert_no_grep 'api PUT\|pr merge' "$case_dir/gh-axi.log" \
+    "autonomous-block-after-preflight: blocked lane reached a forge merge"
+  pass "autonomous merge rechecks authority after preflight"
+}
+
 test_autonomous_merge_refuses_wrong_authority_or_validation() {
   local label case_dir rc status ci_log
   for label in blocked yolo-off wrong-mode red-current stale-run; do
@@ -521,4 +570,5 @@ test_parses_pr_url_for_gh_axi
 test_autonomous_merge_accepts_only_current_green_lane
 test_autonomous_merge_refuses_unrelated_or_mismatched_identity
 test_autonomous_merge_refuses_post_validation_head_advance
+test_autonomous_merge_rechecks_block_after_preflight
 test_autonomous_merge_refuses_wrong_authority_or_validation
